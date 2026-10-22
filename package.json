@@ -16,6 +16,7 @@
   "scripts": {
     "build": "tsc -p .",
     "watch": "tsc -w -p .",
+    "prepare": "npm run build",
     "start": "node dist/cli.js",
     "test": "tsc -p . && node --test test/*.test.js"
   },
