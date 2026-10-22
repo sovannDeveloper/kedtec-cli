@@ -1,0 +1,43 @@
+# Review every pull request with KEDTec and post the result as a comment.
+# Secrets: KEDTEC_API_KEY (a token from /admin/tokens) and KEDTEC_ENDPOINT
+# (e.g. https://ai.example.com/v1). The runner must be able to reach the endpoint.
+name: KEDTec review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install kedtec
+        run: |
+          git clone --depth 1 https://github.com/your-org/kedtec.git /tmp/kedtec
+          cd /tmp/kedtec && npm ci && npm run build && npm link
+
+      - name: Review the diff
+        env:
+          KEDTEC_API_KEY: ${{ secrets.KEDTEC_API_KEY }}
+          KEDTEC_ENDPOINT: ${{ secrets.KEDTEC_ENDPOINT }}
+          KEDTEC_PERMISSION_MODE: plan
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD \
+            | kedtec -p "Review this pull request diff. List real bugs and risks with file:line references, most severe first. Say so plainly if you find none." \
+                --max-turns 40 > review.md
+
+      - name: Comment on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment ${{ github.event.pull_request.number }} --body-file review.md
