@@ -23,9 +23,7 @@ jobs:
           node-version: 20
 
       - name: Install kedtec
-        run: |
-          git clone --depth 1 https://github.com/your-org/kedtec.git /tmp/kedtec
-          cd /tmp/kedtec && npm ci && npm run build && npm link
+        run: npm i -g github:sovannDeveloper/kedtec-cli
 
       - name: Review the diff
         env:

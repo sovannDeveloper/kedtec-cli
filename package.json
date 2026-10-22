@@ -14,7 +14,7 @@
     "node": ">=18.17"
   },
   "scripts": {
-    "build": "tsc -p .",
+    "compile": "tsc -p .",
     "watch": "tsc -w -p .",
     "start": "node dist/cli.js",
     "test": "tsc -p . && node --test test/*.test.js"

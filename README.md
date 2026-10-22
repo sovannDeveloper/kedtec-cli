@@ -9,14 +9,17 @@ in CI.
 ## Install
 
 ```bash
-cd kedtec
-npm install
-npm run build
-npm link            # puts `kedtec` on your PATH
+npm i -g github:sovannDeveloper/kedtec-cli   # puts `kedtec` on your PATH
 kedtec login      # endpoint, API token (from /admin/tokens), default model
 ```
 
-Requires Node 18.17+.
+Requires Node 18.17+ and git.
+
+The built `dist/` is committed, so installing from GitHub needs no build step.
+Run `npm run compile` before each push so it matches `src/`. (The script is not
+called `build` on purpose: npm runs a full dependency install inside the git
+checkout of any package with a `build` script, and on a global install that
+inner install writes into the real install folder and breaks it.)
 
 ### Windows
 
