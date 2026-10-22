@@ -346,7 +346,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
           `  ${c.gray('mode    ')}  ${modeColor(permissions.mode, MODE_LABEL[permissions.mode])}`,
           `  ${c.gray('root    ')}  ${root}`,
           `  ${c.gray('session ')}  ${session.id}`,
-          `  ${c.gray('instructions')} ${instr.length ? instr.map(f => `${displayPath(f.path, root)}${f.truncated ? ' (truncated)' : ''}`).join(', ') : 'none'}`,
+          `  ${c.gray('instructions')} ${instr.length ? instr.map(f => `${displayPath(f.path, root)}${!f.truncated ? '' : f.text ? ' (truncated)' : ' (omitted)'}`).join(', ') : 'none'}`,
         ].join('\n'));
         return true;
       }

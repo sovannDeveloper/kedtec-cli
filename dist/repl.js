@@ -398,7 +398,7 @@ async function runRepl(opts) {
                     `  ${ui_1.c.gray('mode    ')}  ${modeColor(permissions.mode, MODE_LABEL[permissions.mode])}`,
                     `  ${ui_1.c.gray('root    ')}  ${root}`,
                     `  ${ui_1.c.gray('session ')}  ${session.id}`,
-                    `  ${ui_1.c.gray('instructions')} ${instr.length ? instr.map(f => `${(0, tools_1.displayPath)(f.path, root)}${f.truncated ? ' (truncated)' : ''}`).join(', ') : 'none'}`,
+                    `  ${ui_1.c.gray('instructions')} ${instr.length ? instr.map(f => `${(0, tools_1.displayPath)(f.path, root)}${!f.truncated ? '' : f.text ? ' (truncated)' : ' (omitted)'}`).join(', ') : 'none'}`,
                 ].join('\n'));
                 return true;
             }

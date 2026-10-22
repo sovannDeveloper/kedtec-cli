@@ -45,23 +45,29 @@ export function loadInstructions(cwd: string): InstructionFile[] {
   const candidates = [path.join(HOME_DIR, 'KEDTEC.md')];
   for (const d of dirs) for (const name of INSTRUCTION_FILES) candidates.push(path.join(d, name));
 
-  const files: InstructionFile[] = [];
-  let total = 0;
+  const found: { path: string; text: string }[] = [];
   const seen = new Set<string>();
   for (const file of candidates) {
-    let text: string;
     try {
       const real = fs.realpathSync(file);
       if (seen.has(real)) continue;
       seen.add(real);
-      text = fs.readFileSync(real, 'utf8');
+      found.push({ path: file, text: fs.readFileSync(real, 'utf8') });
     } catch { continue; }
-    const budget = Math.min(MAX_FILE_CHARS, MAX_TOTAL_CHARS - total);
-    if (budget <= 0) break;
-    const truncated = text.length > budget;
-    if (truncated) text = text.slice(0, budget);
-    total += text.length;
-    files.push({ path: file, text, truncated });
+  }
+
+  // The total budget is spent from the most specific file outward, so when it
+  // runs out it is the general files that get cut, not the ones that win. A
+  // file left with no budget is still listed (empty, truncated) so the model
+  // knows it exists.
+  const files: InstructionFile[] = new Array(found.length);
+  let remaining = MAX_TOTAL_CHARS;
+  for (let i = found.length - 1; i >= 0; i--) {
+    const budget = Math.min(MAX_FILE_CHARS, remaining);
+    const truncated = found[i].text.length > budget;
+    const text = truncated ? found[i].text.slice(0, budget) : found[i].text;
+    remaining -= text.length;
+    files[i] = { path: found[i].path, text, truncated };
   }
   return files;
 }
@@ -146,7 +152,9 @@ export function buildSystemPrompt(opts: { root: string; mode: PermissionMode; mo
   const files = loadInstructions(opts.root);
   if (files.length > 0) {
     const blocks = files.map(f => {
-      const note = f.truncated ? `\n\n[Truncated here to save context; read ${f.path} with read_file for the rest when relevant.]` : '';
+      const note = !f.truncated ? ''
+        : f.text ? `\n\n[Truncated here to save context; read ${f.path} with read_file for the rest when relevant.]`
+        : `[Omitted to save context; read ${f.path} with read_file when relevant.]`;
       return `## ${f.path}\n\n${f.text.trim()}${note}`;
     });
     parts.push(`# Project instructions\nThese files were written by the user and the project's maintainers. Follow them; they override the defaults above.\n\n${blocks.join('\n\n')}`);
