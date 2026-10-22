@@ -396,7 +396,7 @@ export class Screen implements Prompter {
   private layoutInput(): { lines: string[]; cursorRow: number; cursorCol: number } {
     const promptWidth = stripAnsi(this.prompt).length;
     const avail = Math.max(10, this.cols - promptWidth - 1);
-    const shown = this.secret ? '•'.repeat([...segmenter.segment(this.text)].length) : this.text;
+    const shown = this.secret ? '*'.repeat([...segmenter.segment(this.text)].length) : this.text;
     const cursorAt = this.secret ? [...segmenter.segment(this.text.slice(0, this.cursor))].length : this.cursor;
     const lines: string[] = [''];
     let width = 0, row = 0, cursorRow = 0, cursorCol = 0, offset = 0;

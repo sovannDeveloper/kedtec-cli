@@ -140,15 +140,18 @@ class LineInput {
                 removeHistoryDuplicates: true,
                 prompt,
             });
-            // A secret is not echoed at all once the prompt is on screen.
+            // A secret is echoed as one * per character once the prompt is on screen,
+            // so a paste visibly landed without the key itself being shown.
             let muted = false;
             if (opts.secret) {
+                const mask = (s) => s.replace(/[^\r\n]/gu, '*');
                 const anyRl = rl;
                 anyRl._writeToOutput = (s) => {
                     if (!muted)
-                        process.stdout.write(s);
-                    else if (/[\r\n]/.test(s))
-                        process.stdout.write('\n');
+                        return void process.stdout.write(s);
+                    // A redraw (backspace, cursor keys) writes the prompt and the whole line together.
+                    const p = rl.getPrompt();
+                    process.stdout.write(s.startsWith(p) ? p + mask(s.slice(p.length)) : mask(s));
                 };
             }
             if (useHistory)
