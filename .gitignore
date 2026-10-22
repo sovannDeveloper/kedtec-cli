@@ -1,3 +1,4 @@
 node_modules/
 .kedtec/sessions/
 .DS_Store
+ide-bridge/out/

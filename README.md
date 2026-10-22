@@ -21,6 +21,12 @@ called `build` on purpose: npm runs a full dependency install inside the git
 checkout of any package with a `build` script, and on a global install that
 inner install writes into the real install folder and breaks it.)
 
+To update, run the same install command again; it fetches the latest `main`.
+Your login and settings in `~/.kedtec` are kept. Check with `kedtec --version`.
+If the old version stays, npm reused a cached copy: `npm uninstall -g kedtec`
+first. To pin a release, install a tag instead:
+`npm i -g github:sovannDeveloper/kedtec-cli#v0.1.2`.
+
 ### Windows
 
 Works in Windows Terminal, PowerShell and cmd. Install
@@ -87,11 +93,16 @@ newlines), ↑/↓ walk history, Tab completes slash commands, Esc clears.
 
 ## VS Code integration
 
-With the KEDTec VS Code extension installed, the status line shows the file open
-in the editor window this terminal belongs to (`⧉ In ui.ts`), or how many lines
-are selected (`⧉ 12 lines selected`). The next message carries that selection to
-the model, or a note naming the open file; it is sent once per change, not on
-every message. The extension writes the editor state to `~/.kedtec/ide/<pid>.json`
+Run `kedtec` in a VS Code terminal and the status line shows the file open in
+that window (`⧉ In ui.ts`), or how many lines are selected (`⧉ 12 lines
+selected`). The next message carries that selection to the model, or a note
+naming the open file; it is sent once per change, not on every message.
+
+This needs the small KEDTec CLI Bridge extension (`ide-bridge/`), which the CLI
+installs into the editor itself the first time it runs in a VS Code terminal
+(Cursor and other VS Code forks too). If the file does not show right away, run
+**Developer: Reload Window**. Set `KEDTEC_NO_IDE_BRIDGE=1` to stop the CLI from
+installing it. The extension writes the editor state to `~/.kedtec/ide/<pid>.json`
 and the CLI picks the window whose workspace contains the current directory.
 
 ## Permission modes
@@ -187,6 +198,24 @@ npm run watch     # recompile on change
 npm test          # build + unit tests (node:test)
 node dist/cli.js  # run without linking
 ```
+
+### Releasing
+
+The version lives only in `package.json`; `kedtec --version` reads it at run
+time, so there is no constant in `src/` to keep in step.
+
+```bash
+npm run compile && npm test       # dist/ must match src/ — it is what users install
+git add -A && git commit -m "…"   # npm version needs a clean working tree
+npm version patch                 # or minor / major: bumps, commits and tags vX.Y.Z
+git push --follow-tags
+```
+
+Users then update with `npm i -g github:sovannDeveloper/kedtec-cli` (see Install).
+
+After changing `ide-bridge/`, bump its version in `ide-bridge/package.json` and
+run `npm run bridge`: it rebuilds `dist/kedtec-ide-bridge-<version>.vsix`, and
+the CLI updates the extension in any window where it is missing or older.
 
 `src/shellSafety.ts`, `src/ignore.ts` and `src/diff.ts` are shared with the
 KEDTec VS Code extension: the read-only command classifier, the `.gitignore`

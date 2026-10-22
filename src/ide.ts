@@ -3,9 +3,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-// The editor this terminal sits under, as reported by the KEDTec VS Code
-// extension (src/cliBridge.ts there): the file open in that window and what is
-// selected in it. Each window writes ~/.kedtec/ide/<extension-host pid>.json;
+// The editor this terminal sits under, as reported by the KEDTec CLI Bridge
+// extension (ide-bridge/, installed by ideBridge.ts): the file open in that
+// window and what is selected in it. Each window writes ~/.kedtec/ide/<extension-host pid>.json;
 // this picks the one whose workspace contains the project, from a window that
 // is still running.
 

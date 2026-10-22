@@ -119,6 +119,31 @@ test('ide: every selection reaches the message, and an old extension still works
   assert.ok(new IdeContext('/p').forMessage(old).text.includes('lines="12-16"'));
 });
 
+test('ide bridge: finds the editor CLI on each platform and the newest bundled vsix', () => {
+  const { bundledBridge, compareVersions, editorCli } = require('../dist/ideBridge');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kedtec-bridge-'));
+  const touch = f => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, ''); };
+  // Windows: Code.exe sits beside bin\, which also holds a bash script and code-tunnel.exe.
+  const win = path.join(tmp, 'Microsoft VS Code');
+  for (const n of ['code', 'code.cmd', 'code-tunnel.exe']) touch(path.join(win, 'bin', n));
+  assert.strictEqual(editorCli({ VSCODE_GIT_ASKPASS_NODE: path.join(win, 'Code.exe') }, 'win32'), path.join(win, 'bin', 'code.cmd'));
+  // macOS: the helper is nested deep inside the .app bundle.
+  const app = path.join(tmp, 'Visual Studio Code.app');
+  for (const n of ['code-tunnel', 'code']) touch(path.join(app, 'Contents', 'Resources', 'app', 'bin', n));
+  const helper = path.join(app, 'Contents', 'Frameworks', 'Code Helper (Plugin).app', 'Contents', 'MacOS', 'Code Helper (Plugin)');
+  assert.strictEqual(editorCli({ VSCODE_GIT_ASKPASS_NODE: helper }, 'darwin'), path.join(app, 'Contents', 'Resources', 'app', 'bin', 'code'));
+  // A remote server only has code-server beside it: use `code` from PATH.
+  touch(path.join(tmp, 'server', 'bin', 'code-server'));
+  assert.strictEqual(editorCli({ VSCODE_GIT_ASKPASS_NODE: path.join(tmp, 'server', 'node') }, 'linux'), 'code');
+  assert.strictEqual(editorCli({}, 'linux'), 'code');
+
+  assert.ok(compareVersions('0.10.0', '0.9.1') > 0 && compareVersions('1.0.0', '1.0.0') === 0);
+  for (const v of ['0.9.1', '0.10.0']) touch(path.join(tmp, 'dist', `kedtec-ide-bridge-${v}.vsix`));
+  assert.strictEqual(bundledBridge(path.join(tmp, 'dist')).version, '0.10.0');
+  assert.strictEqual(bundledBridge(path.join(tmp, 'nowhere')), null);
+  assert.strictEqual(bundledBridge(path.join(__dirname, '..', 'dist')).version, require('../ide-bridge/package.json').version);
+});
+
 test('auto mode: edits and low-risk commands run, flagged ones ask or are refused', async () => {
   const { assessRisk } = require('../dist/shellSafety');
   const root = '/tmp/proj';

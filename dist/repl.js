@@ -43,6 +43,7 @@ const input_1 = require("./input");
 const prompt_1 = require("./prompt");
 const render_1 = require("./render");
 const ide_1 = require("./ide");
+const ideBridge_1 = require("./ideBridge");
 const screen_1 = require("./screen");
 const session_1 = require("./session");
 const tools_1 = require("./tools");
@@ -410,6 +411,18 @@ async function runRepl(opts) {
     ide.start();
     banner();
     refreshBar();
+    // No window reports this project yet: put the bridge extension into the editor.
+    if (!ide.state) {
+        void (0, ideBridge_1.ensureIdeBridge)().then(result => {
+            if (result === 'installed' || result === 'updated') {
+                console.log(ui_1.c.gray(`  ⧉ ${result === 'installed' ? 'Installed' : 'Updated'} the KEDTec CLI Bridge in VS Code, so your open file and selection show here.`));
+                console.log(ui_1.c.gray('    If they do not appear in a few seconds, run "Developer: Reload Window".\n'));
+            }
+            else if (result === 'failed') {
+                console.log(ui_1.c.gray('  ⧉ Could not install the KEDTec CLI Bridge in VS Code; the open file and selection will not show here.\n'));
+            }
+        });
+    }
     if (agent.messages.length > 0)
         console.log(ui_1.c.gray(`  Continuing "${session.title}" (${agent.messages.length} messages).\n`));
     if (opts.initialPrompt) {

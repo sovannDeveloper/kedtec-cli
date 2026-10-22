@@ -1,0 +1,38 @@
+{
+  "name": "kedtec-ide-bridge",
+  "displayName": "KEDTec CLI Bridge",
+  "description": "Shows the kedtec terminal CLI which file is open and what is selected in this window",
+  "version": "0.1.0",
+  "publisher": "kedtec",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sovannDeveloper/kedtec-cli"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": false
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "package": "node pack.js"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "3.6.0",
+    "typescript": "5.9.3"
+  }
+}

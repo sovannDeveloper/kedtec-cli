@@ -9,6 +9,7 @@ import { Asker, PermissionRequest, Permissions } from './permissions';
 import { loadInstructions } from './prompt';
 import { TerminalRenderer } from './render';
 import { IdeContext, IdeWatcher, ideLabel } from './ide';
+import { ensureIdeBridge } from './ideBridge';
 import { Screen } from './screen';
 import { SessionFile, listSessions, newSessionId, saveSession, titleFrom } from './session';
 import { displayPath, isInsideRoot, runShell } from './tools';
@@ -359,6 +360,17 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   ide.start();
   banner();
   refreshBar();
+  // No window reports this project yet: put the bridge extension into the editor.
+  if (!ide.state) {
+    void ensureIdeBridge().then(result => {
+      if (result === 'installed' || result === 'updated') {
+        console.log(c.gray(`  ⧉ ${result === 'installed' ? 'Installed' : 'Updated'} the KEDTec CLI Bridge in VS Code, so your open file and selection show here.`));
+        console.log(c.gray('    If they do not appear in a few seconds, run "Developer: Reload Window".\n'));
+      } else if (result === 'failed') {
+        console.log(c.gray('  ⧉ Could not install the KEDTec CLI Bridge in VS Code; the open file and selection will not show here.\n'));
+      }
+    });
+  }
   if (agent.messages.length > 0) console.log(c.gray(`  Continuing "${session.title}" (${agent.messages.length} messages).\n`));
   if (opts.initialPrompt) {
     console.log(`${c.gray('>')} ${opts.initialPrompt}`);
