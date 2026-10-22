@@ -47,7 +47,8 @@ const screen_1 = require("./screen");
 const session_1 = require("./session");
 const tools_1 = require("./tools");
 const ui_1 = require("./ui");
-exports.VERSION = '0.1.0';
+// Read from package.json (one level above dist/) so a version bump is a one-place edit.
+exports.VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
 const MODE_LABEL = {
     default: 'default',
     acceptEdits: 'accept edits',

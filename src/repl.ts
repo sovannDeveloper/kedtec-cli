@@ -14,7 +14,8 @@ import { SessionFile, listSessions, newSessionId, saveSession, titleFrom } from 
 import { displayPath, isInsideRoot, runShell } from './tools';
 import { TERMINAL_TITLE, c, clip, colorDiff, columns, setTerminalTitle, stripAnsi } from './ui';
 
-export const VERSION = '0.1.0';
+// Read from package.json (one level above dist/) so a version bump is a one-place edit.
+export const VERSION: string = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
 
 export interface ReplOptions {
   config: ResolvedConfig;
