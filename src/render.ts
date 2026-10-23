@@ -1,7 +1,7 @@
 import { AgentEvents } from './agent';
 import { KbSource, ResearchPage } from './client';
 import { ToolOutcome } from './tools';
-import { ActivitySink, MarkdownStream, Spinner, c, clip, formatDuration, toolHeader, toolResultLine } from './ui';
+import { ActivitySink, MarkdownStream, Spinner, c, clip, columns, formatDuration, toolHeader, toolResultLine } from './ui';
 
 // What the spinner calls the model's work, picked once per turn.
 const VERBS = ['Thinking', 'Pondering', 'Brewing', 'Cooking', 'Crunching', 'Mulling', 'Noodling', 'Percolating', 'Tinkering', 'Working'];
@@ -124,21 +124,48 @@ export class TerminalRenderer implements AgentEvents {
 
   status(label: string): void { this.spin(label); }
 
+  // Kept small: short paths, one row per document (its citation numbers
+  // together), each row cut to the width so nothing wraps, and dim.
   sources(sources: KbSource[], research: ResearchPage[]): void {
     if (!this.opts.showText) return;
     this.pause();
-    const rows: string[] = [];
-    for (const s of sources.slice(0, 8)) {
-      const where = [s.source, s.section].filter(Boolean).join(' · ');
-      if (where) rows.push(`${s.n !== undefined ? `[${s.n}] ` : ''}${where}`);
-    }
-    for (const p of research.slice(0, 8)) if (p.url) rows.push(`${p.title ? `${clip(p.title, 60)} — ` : ''}${p.url}`);
+    const rows = sourceRows(sources, research);
     if (rows.length === 0) return;
-    this.write(`  ${c.gray('Sources:')}\n${rows.map(r => `    ${c.gray(r)}`).join('\n')}\n`);
+    const width = Math.max(20, columns() - 6);
+    this.write(`  ${c.dim(c.gray('Sources:'))}\n${rows.map(r => `    ${c.dim(c.gray(clip(r, width)))}`).join('\n')}\n`);
   }
 
   notice(message: string): void {
     this.pause();
     this.write(`\n${c.yellow('!')} ${message}\n`);
   }
+}
+
+// A knowledge-base path as the server stores it is mostly the server's own
+// layout: "/home/…/backend/repos/mobile/sovanndeveloper-remixicon-4cb89515/lib/x.dart".
+// What tells sources apart is the repository and the file: everything up to
+// "repos/" goes, and so does the checkout's hash suffix. Another long absolute
+// path keeps its last three parts.
+export function shortSource(source: string): string {
+  let p = source.replace(/\\/g, '/');
+  const repos = p.lastIndexOf('/repos/');
+  if (repos >= 0) p = p.slice(repos + '/repos/'.length);
+  else if (p.startsWith('/') && p.split('/').length > 5) p = `…/${p.split('/').slice(-3).join('/')}`;
+  return p.split('/').map(seg => seg.replace(/-[0-9a-f]{8}$/, '')).join('/');
+}
+
+// One row per document and section, with every citation number that points
+// at it: "[1,2] mobile/sovanndeveloper-remixicon/lib/remixicon.dart".
+export function sourceRows(sources: KbSource[], research: ResearchPage[]): string[] {
+  const byPlace = new Map<string, number[]>();
+  for (const s of sources.slice(0, 12)) {
+    const where = [s.source ? shortSource(s.source) : '', s.section].filter(Boolean).join(' · ');
+    if (!where) continue;
+    const ns = byPlace.get(where) ?? [];
+    if (s.n !== undefined) ns.push(s.n);
+    byPlace.set(where, ns);
+  }
+  const rows = [...byPlace].slice(0, 8).map(([where, ns]) => `${ns.length ? `[${ns.join(',')}] ` : ''}${where}`);
+  for (const p of research.slice(0, 8)) if (p.url) rows.push(`${p.title ? `${clip(p.title, 60)} — ` : ''}${p.url}`);
+  return rows;
 }

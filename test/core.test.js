@@ -575,3 +575,19 @@ test('custom models: saved, merged into the list, keys from the environment', ()
     left: ['gpt-4o-mini'],
   });
 });
+
+test('sources: short paths, one row per document', () => {
+  const { shortSource, sourceRows } = require('../dist/render');
+  const base = '/home/ocsaiadmin/host/internal-ai/backend/repos/mobile';
+  assert.strictEqual(shortSource(`${base}/sovanndeveloper-remixicon-4cb89515/lib/remixicon.dart`), 'mobile/sovanndeveloper-remixicon/lib/remixicon.dart');
+  assert.strictEqual(shortSource('/srv/data/a/b/c/d/file.md'), '…/c/d/file.md');
+  assert.strictEqual(shortSource('docs/guide.md'), 'docs/guide.md');
+  assert.deepStrictEqual(sourceRows([
+    { n: 1, source: `${base}/sovanndeveloper-remixicon-4cb89515/lib/remixicon.dart` },
+    { n: 2, source: `${base}/sovanndeveloper-remixicon-4cb89515/lib/remixicon.dart` },
+    { n: 5, source: `${base}/ocsolution-ocs_auth-516cd813/docs/10-reference.md`, section: 'Backend endpoints' },
+  ], []), [
+    '[1,2] mobile/sovanndeveloper-remixicon/lib/remixicon.dart',
+    '[5] mobile/ocsolution-ocs_auth/docs/10-reference.md · Backend endpoints',
+  ]);
+});
