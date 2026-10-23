@@ -83,11 +83,20 @@ const FILE_LIST_TTL_MS = 30_000;
 // leading "/", and for an "@" the entries of the folder being typed into, then
 // (for a bare name) project files whose name or path contains it. Ignored
 // files are left out, as the search tools leave them out.
-export function makeCompleter(root: string): Completer {
+// The file list is built in the background and never waited for: a completion
+// uses the list as it last stood, and `onListed` says when a fresh one arrived
+// so the suggestions on screen can be asked for again.
+export function makeCompleter(root: string, onListed?: () => void): Completer {
   let files: string[] = [];
   let listedAt = 0;
+  let listing = false;
   const projectFiles = () => {
-    if (Date.now() - listedAt > FILE_LIST_TTL_MS) { files = listProjectFiles(root); listedAt = Date.now(); }
+    if (!listing && Date.now() - listedAt > FILE_LIST_TTL_MS) {
+      listing = true;
+      void listProjectFiles(root)
+        .then(list => { files = list; onListed?.(); }, () => { /* keep the old list */ })
+        .finally(() => { listing = false; listedAt = Date.now(); });
+    }
     return files;
   };
 
@@ -240,7 +249,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   const screen = new Screen();
   const input: Prompter = Screen.supported() ? screen : new LineInput();
   screen.completions = SLASH_COMMANDS;
-  screen.completer = makeCompleter(root);
+  screen.completer = makeCompleter(root, () => screen.refreshSuggestions());
   // Usage is known once a round's stream ends; the bar's context figure follows
   // it. With the pinned layout the spinner draws in the row above the input box.
   const renderer = new TerminalRenderer(process.stdout, {

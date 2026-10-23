@@ -528,6 +528,15 @@ export class Screen implements Prompter {
     this.suggestions = s && s.items.length ? s : null;
   }
 
+  // The completer has more to offer for the same text (the project's file list
+  // finished loading in the background): ask it again and redraw.
+  refreshSuggestions(): void {
+    if (!this.editing) return;
+    this.suggestedFor = '';
+    this.updateSuggestions();
+    this.render();
+  }
+
   private closeSuggestions(): void {
     this.suggestions = null;
     this.suggestedFor = '';

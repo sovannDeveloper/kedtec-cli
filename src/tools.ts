@@ -114,9 +114,25 @@ function walkFiles(dir: string, root: string, matcher: IgnoreMatcher, signal: Ab
 }
 
 // Every project file the search tools would see, relative and slash-separated
-// (the @ completion in the input box).
-export function listProjectFiles(root: string): string[] {
-  return walkFiles(root, root, loadIgnoreMatcher(root), new AbortController().signal).map(f => f.rel);
+// (the @ completion in the input box). Asynchronous, unlike walkFiles: started
+// in a home folder it lists 50,000 files over ~10s, and done synchronously that
+// froze the input box mid-keystroke.
+export async function listProjectFiles(root: string): Promise<string[]> {
+  const matcher = loadIgnoreMatcher(root);
+  const out: string[] = [];
+  const stack = [root];
+  while (stack.length > 0 && out.length < MAX_WALK_FILES) {
+    const current = stack.pop()!;
+    let entries: fs.Dirent[];
+    try { entries = await fs.promises.readdir(current, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const rel = path.relative(root, path.join(current, e.name)).split(path.sep).join('/');
+      if (e.isDirectory()) {
+        if (e.name !== '.git' && !matcher.isIgnored(rel, true)) stack.push(path.join(current, e.name));
+      } else if (e.isFile() && !matcher.isIgnored(rel, false)) out.push(rel);
+    }
+  }
+  return out;
 }
 
 // gitignore-ish glob → RegExp. A pattern with no slash matches a file name at
