@@ -60,7 +60,8 @@ Print mode (`-p`, CI) never asks.
 | Input | Effect |
 | --- | --- |
 | `/help` | list commands |
-| `/model [id]` · `/models` | switch or list models (the picker reads the endpoint's `/v1/models`) |
+| `/model [id]` · `/models` | switch or list models (the picker reads the endpoint's `/v1/models`, plus your custom models) |
+| `/model add` · `/model remove <id>` | add a custom model from any OpenAI-compatible endpoint, or remove one |
 | `/mode [default\|acceptEdits\|auto\|plan\|bypass]` · `/plan` | permission mode (no argument cycles) |
 | `/compact [focus]` | summarise the conversation to free context (also automatic near the limit) |
 | `/clear` · `/resume` | new conversation · reopen an earlier one |
@@ -222,6 +223,25 @@ kedtec logout                          # forget the API key
 
 Precedence: command-line flag › environment › `~/.kedtec/config.json` › default.
 The config file is written with mode `600`.
+
+### Custom models
+
+Use a model the endpoint does not list, or one served somewhere else entirely
+(OpenRouter, OpenAI, a local Ollama or LM Studio, another KEDTec server):
+
+```bash
+kedtec models add            # asks for the model id, endpoint, API key and context window
+kedtec models                # lists the endpoint's models and yours
+kedtec -m llama3.1:8b        # use it, or pick it with /model in a session
+kedtec models remove llama3.1:8b
+```
+
+In a session, `/model add` does the same and switches to the new model; the
+`/model` picker also ends with "+ Add a custom model…". Leave the endpoint blank
+to use the configured one. An API key written as `$OPENROUTER_API_KEY` is read
+from that environment variable when the model is used, so it never has to be
+stored in the config file. Custom models are kept under `customModels` in
+`~/.kedtec/config.json`.
 
 ## Development
 

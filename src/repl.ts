@@ -2,8 +2,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import OpenAI from 'openai';
 import { Agent } from './agent';
-import { ContentPart, ModelInfo, describeError, listModels } from './client';
-import { PERMISSION_MODES, PermissionMode, ResolvedConfig, maskKey, normalizeMode, readStoredConfig, writeStoredConfig } from './config';
+import { ContentPart, ModelInfo, describeError, listModels, mergeCustomModels } from './client';
+import {
+  CustomModel, PERMISSION_MODES, PermissionMode, ResolvedConfig, maskKey, normalizeMode, readCustomModels, readStoredConfig,
+  removeCustomModel, resolveKey, saveCustomModel, writeStoredConfig,
+} from './config';
 import { ImageAttachment, dataUrl, imageFromFile, isImagePath } from './images';
 import { LineInput, PanelTab, Prompter, TurnKeys, questionForm, select, tabbedPanel } from './input';
 import { Asker, PermissionRequest, Permissions } from './permissions';
@@ -61,7 +64,7 @@ const COMMANDS: { name: string; args?: string; about: string }[] = [
   { name: '/help', about: 'this help' },
   { name: '/clear', about: 'start a new conversation' },
   { name: '/compact', args: '[focus]', about: 'summarise the conversation to free context' },
-  { name: '/model', args: '[id]', about: 'show or switch the model (no id: pick from a list)' },
+  { name: '/model', args: '[id|add|remove id]', about: 'switch the model (no id: pick from a list), or add a custom one' },
   { name: '/models', about: 'list the models the endpoint serves' },
   { name: '/mode', args: '[name]', about: 'permission mode: default · acceptEdits · auto · plan · bypass (no name: cycle)' },
   { name: '/plan', about: 'shortcut for /mode plan' },
@@ -438,6 +441,20 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     }
   };
 
+  // Switch to a model and make it the default for the next session.
+  const useModel = (m: ModelInfo) => {
+    opts.setModel(m);
+    refreshBar();
+    const save = readStoredConfig();
+    save.model = m.id;
+    writeStoredConfig(save);
+    console.log(c.gray(`  ⎿  Model: ${m.id}${stripAnsi(customTag(m))} (saved as default)`));
+  };
+  // The model list after a custom model was added or removed.
+  const syncCustomModels = () => {
+    opts.models.splice(0, opts.models.length, ...mergeCustomModels(opts.models.filter(m => !m.custom), readCustomModels()));
+  };
+
   const command = async (line: string): Promise<boolean> => {
     const [cmd, ...rest] = line.slice(1).split(/\s+/);
     const arg = rest.join(' ').trim();
@@ -474,35 +491,47 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
         return true;
       }
       case 'model': {
+        if (arg === 'add') {
+          const model = await askCustomModel(input, opts.config);
+          if (!model) { console.log(c.gray('  ⎿  No model added.')); return true; }
+          saveCustomModel(model);
+          syncCustomModels();
+          useModel(opts.models.find(m => m.id === model.id)!);
+          return true;
+        }
+        const rm = /^(?:remove|rm)\s+(\S+)$/.exec(arg);
+        if (rm) {
+          if (!removeCustomModel(rm[1])) { console.log(c.red(`  No custom model "${rm[1]}". /model lists them.`)); return true; }
+          syncCustomModels();
+          console.log(c.gray(`  ⎿  Removed ${rm[1]}.`));
+          // Still on the model just removed: on to the endpoint's first one.
+          if (agent.opts.model === rm[1] && opts.models[0]) useModel(opts.models[0]);
+          return true;
+        }
         if (arg) {
           const found = opts.models.find(m => m.id === arg);
           opts.setModel(found ?? arg);
           refreshBar();
-          console.log(c.gray(`  ⎿  Model: ${agent.opts.model}${found ? '' : ' (not in the endpoint\'s list — using it as typed)'}`));
+          console.log(c.gray(`  ⎿  Model: ${agent.opts.model}${found ? '' : ' (not in the endpoint\'s list — using it as typed; /model add saves it)'}`));
           return true;
         }
-        if (opts.models.length === 0) { console.log(c.gray(`  Model: ${agent.opts.model}`)); return true; }
-        const choice = await select(opts.models.map(m => (m.name !== m.id ? `${m.id} ${c.gray(m.name)}` : m.id)),
+        const labels = opts.models.map(m => `${m.name !== m.id ? `${m.id} ${c.gray(m.name)}` : m.id}${customTag(m)}`);
+        const choice = await select([...labels, c.accent('+ Add a custom model…')],
           Math.max(0, opts.models.findIndex(m => m.id === agent.opts.model)),
           { title: c.gray('  Choose a model (enter selects, esc cancels):'), transient: true });
         if (choice === null) console.log(c.gray(`  ⎿  Model: ${agent.opts.model} (unchanged)`));
-        else {
-          opts.setModel(opts.models[choice]);
-          refreshBar();
-          const save = readStoredConfig();
-          save.model = agent.opts.model;
-          writeStoredConfig(save);
-          console.log(c.gray(`  ⎿  Model: ${agent.opts.model} (saved as default)`));
-        }
+        else if (choice === opts.models.length) return command('/model add');
+        else useModel(opts.models[choice]);
         return true;
       }
-      case 'models':
-        try {
-          const models = await listModels(opts.config.endpoint, opts.config.apiKey);
-          opts.models.splice(0, opts.models.length, ...models);
-          for (const m of models) console.log(`  ${m.id === agent.opts.model ? c.accent('●') : ' '} ${m.id}${m.name !== m.id ? c.gray(`  ${m.name}`) : ''}`);
-        } catch (err) { console.log(c.red(`  ✗ ${describeError(err)}`)); }
+      case 'models': {
+        let listed: ModelInfo[] = opts.models.filter(m => !m.custom);
+        try { listed = await listModels(opts.config.endpoint, opts.config.apiKey); } catch (err) { console.log(c.red(`  ✗ ${describeError(err)}`)); }
+        opts.models.splice(0, opts.models.length, ...mergeCustomModels(listed, readCustomModels()));
+        for (const m of opts.models) console.log(`  ${m.id === agent.opts.model ? c.accent('●') : ' '} ${m.id}${m.name !== m.id ? c.gray(`  ${m.name}`) : ''}${customTag(m)}`);
+        if (!opts.models.some(m => m.custom)) console.log(c.gray('  /model add adds a model from any OpenAI-compatible endpoint.'));
         return true;
+      }
       case 'mode': case 'plan': {
         const target = cmd === 'plan' ? 'plan' : arg ? normalizeMode(arg) : cycle[(cycle.indexOf(permissions.mode) + 1) % cycle.length];
         if (!target) { console.log(c.red(`  Unknown mode "${arg}". One of: ${PERMISSION_MODES.join(', ')}`)); return true; }
@@ -547,9 +576,10 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
         return true;
       case 'status': {
         const instr = loadInstructions(root, opts.projectConfig);
+        const active = opts.models.find(m => m.id === agent.opts.model);
         console.log([
-          `  ${c.gray('endpoint')}  ${opts.config.endpoint}`,
-          `  ${c.gray('api key ')}  ${maskKey(opts.config.apiKey)}`,
+          `  ${c.gray('endpoint')}  ${active?.endpoint ?? opts.config.endpoint}`,
+          `  ${c.gray('api key ')}  ${maskKey(active?.endpoint ? resolveKey(active.apiKey) ?? '' : opts.config.apiKey)}`,
           `  ${c.gray('model   ')}  ${agent.opts.model}`,
           `  ${c.gray('mode    ')}  ${modeColor(permissions.mode, MODE_LABEL[permissions.mode])}`,
           `  ${c.gray('root    ')}  ${root}`,
@@ -631,6 +661,54 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   screen.disable();
   console.log(c.gray(`\nSession saved — resume with: kedtec --continue`));
   process.exit(0);
+}
+
+// "  custom · openrouter.ai" after a hand-added model's name.
+export function customTag(m: ModelInfo): string {
+  if (!m.custom) return '';
+  let host = '';
+  try { host = m.endpoint ? new URL(m.endpoint).host : ''; } catch { host = m.endpoint ?? ''; }
+  return c.gray(`  custom${host ? ` · ${host}` : ''}`);
+}
+
+// What /model add and `kedtec models add` ask. A blank endpoint means the
+// configured one, which needs no key of its own. The endpoint's model list is
+// read as a check that only warns: plenty of servers serve models they do not list.
+export async function askCustomModel(input: Prompter, cfg: { endpoint: string; apiKey: string }): Promise<CustomModel | null> {
+  const ask = async (q: string, extra: { secret?: boolean; placeholder?: string } = {}) => {
+    const a = await input.ask(q, { history: false, multiline: false, ...extra });
+    return a.kind === 'line' ? a.text.trim() : null;
+  };
+  const id = await ask(`  Model id ${c.gray('(as the endpoint names it)')}: `, { placeholder: 'e.g. gpt-4o-mini, llama3.1:8b, deepseek/deepseek-chat' });
+  if (!id) return null;
+  const ep = await ask(`  Endpoint ${c.gray(`[${cfg.endpoint}]`)}: `, { placeholder: 'enter keeps it; or e.g. https://openrouter.ai/api/v1, http://localhost:11434/v1' });
+  if (ep === null) return null;
+  const endpoint = ep && ep.replace(/\/+$/, '') !== cfg.endpoint ? ep.replace(/\/+$/, '') : undefined;
+  if (endpoint) {
+    try { if (!/^https?:$/.test(new URL(endpoint).protocol)) throw new Error(); } catch {
+      console.log(c.red(`  ✗ "${endpoint}" is not an http(s) URL.`));
+      return null;
+    }
+  }
+  let apiKey: string | undefined;
+  if (endpoint) {
+    const key = await ask(`  API key ${c.gray('(blank for none, or $ENV_VAR to read it from the environment)')}: `, { secret: true });
+    if (key === null) return null;
+    apiKey = key || undefined;
+  }
+  const cw = await ask(`  Context window ${c.gray('[unknown]')}: `, { placeholder: 'tokens, e.g. 128000 or 128k; enter to skip' });
+  if (cw === null) return null;
+  const m = /^(\d+(?:\.\d+)?)\s*(k)?$/i.exec(cw.replace(/[_,]/g, ''));
+  const contextWindow = m ? Math.round(Number(m[1]) * (m[2] ? 1000 : 1)) || undefined : undefined;
+  try {
+    const listed = await listModels(endpoint ?? cfg.endpoint, endpoint ? resolveKey(apiKey) ?? '' : cfg.apiKey);
+    console.log(listed.some(l => l.id === id)
+      ? c.green(`  ✓ ${id} is served there.`)
+      : c.yellow(`  ! The endpoint answered but does not list ${id}; saved anyway.`));
+  } catch (err) {
+    console.log(c.yellow(`  ! Could not read the endpoint's model list (${describeError(err)}); saved anyway.`));
+  }
+  return { id, endpoint, apiKey, contextWindow };
 }
 
 // The mode picked last becomes the default for the next session — except

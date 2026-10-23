@@ -2,16 +2,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Agent, AgentEvents } from './agent';
-import { ModelInfo, createClient, describeError, listModels } from './client';
+import { ModelInfo, createClient, describeError, listModels, mergeCustomModels } from './client';
 import {
   CONFIG_FILE, ConfigOverrides, DEFAULT_ENDPOINT, PERMISSION_MODES, PermissionMode, StoredConfig,
-  maskKey, normalizeMode, readProjectAllowedCommands, readStoredConfig, resolveConfig, writeStoredConfig,
+  maskKey, normalizeMode, readProjectAllowedCommands, readStoredConfig, removeCustomModel, resolveConfig, resolveKey,
+  saveCustomModel, writeStoredConfig,
 } from './config';
 import { LineInput, select } from './input';
 import { Permissions } from './permissions';
 import { buildSystemPrompt, findGitRoot } from './prompt';
 import { TerminalRenderer } from './render';
-import { VERSION, runRepl } from './repl';
+import { VERSION, askCustomModel, customTag, runRepl } from './repl';
 import { SessionFile, listSessions, loadSession, newSessionId, saveSession, titleFrom } from './session';
 import { confirmTrust } from './trust';
 import { c, clip, setColor } from './ui';
@@ -22,7 +23,8 @@ ${c.bold('Usage')}
   kedtec [prompt]                  start an interactive session (optionally with a first message)
   kedtec -p "prompt"               run once and print the answer (CI / scripts); stdin is appended
   kedtec login                     set the endpoint, API key and default model
-  kedtec models                    list the models the endpoint serves
+  kedtec models                    list the models the endpoint serves, and custom ones
+  kedtec models add | remove <id>  add a custom model (any OpenAI-compatible endpoint), or remove one
   kedtec config [set|unset] …      show or change settings (${CONFIG_FILE})
   kedtec sessions                  list saved conversations for this directory
 
@@ -195,6 +197,7 @@ function cmdConfig(rest: string[]): void {
       `${c.gray('temperature    ')} ${r.temperature}`,
       `${c.gray('permissionMode ')} ${r.permissionMode}`,
       `${c.gray('allowedCommands')} ${r.allowedCommands.length ? r.allowedCommands.join(', ') : '(none)'}`,
+      `${c.gray('customModels   ')} ${r.customModels.length ? r.customModels.map(m => `${m.id}${m.endpoint ? ` (${m.endpoint})` : ''}`).join(', ') : '(none — kedtec models add)'}`,
     ].join('\n'));
     return;
   }
@@ -225,14 +228,32 @@ function cmdConfig(rest: string[]): void {
 
 async function cmdModels(overrides: ConfigOverrides): Promise<void> {
   const cfg = resolveConfig(overrides);
-  try {
-    const models = await listModels(cfg.endpoint, cfg.apiKey);
-    if (models.length === 0) console.log(c.gray('The endpoint lists no models.'));
-    for (const m of models) {
-      const cw = m.contextWindow ? c.gray(` · ${m.contextWindow.toLocaleString()} ctx`) : '';
-      console.log(`${m.id === cfg.model ? c.accent('●') : ' '} ${m.id}${m.name !== m.id ? c.gray(`  ${m.name}`) : ''}${cw}`);
-    }
-  } catch (err) { die(describeError(err)); }
+  let listed: ModelInfo[] = [];
+  try { listed = await listModels(cfg.endpoint, cfg.apiKey); } catch (err) {
+    if (cfg.customModels.length === 0) die(describeError(err));
+    console.log(c.yellow(`! Could not list the endpoint's models: ${describeError(err)}`));
+  }
+  const models = mergeCustomModels(listed, cfg.customModels);
+  if (models.length === 0) console.log(c.gray('The endpoint lists no models. Add one with `kedtec models add`.'));
+  for (const m of models) {
+    const cw = m.contextWindow ? c.gray(` · ${m.contextWindow.toLocaleString()} ctx`) : '';
+    console.log(`${m.id === cfg.model ? c.accent('●') : ' '} ${m.id}${m.name !== m.id ? c.gray(`  ${m.name}`) : ''}${cw}${customTag(m)}`);
+  }
+}
+
+async function cmdModelsAdd(overrides: ConfigOverrides): Promise<void> {
+  if (!process.stdin.isTTY) die('models add is interactive; edit customModels in the config file instead.');
+  const cfg = resolveConfig(overrides);
+  const model = await askCustomModel(new LineInput(), cfg);
+  if (!model) process.exit(130);
+  saveCustomModel(model);
+  console.log(c.gray(`Saved ${model.id} to ${CONFIG_FILE}. Use it with: kedtec -m ${model.id}  (or /model in a session)`));
+}
+
+function cmdModelsRemove(id: string | undefined): void {
+  if (!id) die('models remove <id>');
+  if (!removeCustomModel(id)) die(`no custom model "${id}" (kedtec models lists them)`);
+  console.log(c.gray(`Removed ${id}.`));
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
@@ -246,6 +267,8 @@ async function main(): Promise<void> {
     if (sub === 'login') return cmdLogin();
     if (sub === 'logout') { const s = readStoredConfig(); delete s.apiKey; writeStoredConfig(s); console.log('API key removed.'); return; }
     if (sub === 'config') return cmdConfig(args.positional.slice(1));
+    if (sub === 'models' && args.positional[1] === 'add') return cmdModelsAdd(overrides);
+    if (sub === 'models' && (args.positional[1] === 'remove' || args.positional[1] === 'rm')) return cmdModelsRemove(args.positional[2]);
     if (sub === 'models') return cmdModels(overrides);
   }
 
@@ -276,15 +299,21 @@ async function main(): Promise<void> {
   }
 
   // The model: flag/env/config, else the endpoint's first entry — which on the
-  // KEDTec API is the registry's default model.
-  let models: ModelInfo[] = [];
-  try { models = await listModels(cfg.endpoint, cfg.apiKey); } catch (err) {
-    if (!cfg.model) die(`no model configured and the model list could not be read: ${describeError(err)}`);
+  // KEDTec API is the registry's default model — else the first custom one.
+  let listed: ModelInfo[] = [];
+  let listError = '';
+  try { listed = await listModels(cfg.endpoint, cfg.apiKey); } catch (err) { listError = describeError(err); }
+  const models = mergeCustomModels(listed, cfg.customModels);
+  const startModel = cfg.model || listed[0]?.id || models[0]?.id;
+  if (!startModel) {
+    die(listError
+      ? `no model configured and the model list could not be read: ${listError}`
+      : 'the endpoint lists no models; pass --model <id>, or add one with `kedtec models add`');
   }
-  const startModel = cfg.model || models[0]?.id;
-  if (!startModel) die('the endpoint lists no models; pass --model <id>');
 
   const client = createClient(cfg.endpoint, cfg.apiKey);
+  // A custom model served elsewhere gets a client of its own.
+  const clientFor = (info: ModelInfo | undefined) => (info?.endpoint ? createClient(info.endpoint, resolveKey(info.apiKey) ?? '') : client);
   const projectAllowed = args.projectConfig ? readProjectAllowedCommands(findGitRoot(root) ?? root) : [];
   const permissions = new Permissions(cfg.permissionMode, [...cfg.allowedCommands, ...projectAllowed], null);
 
@@ -299,7 +328,7 @@ async function main(): Promise<void> {
   }
 
   const agent: Agent = new Agent({
-    client,
+    client: clientFor(models.find(m => m.id === startModel)),
     model: startModel,
     root,
     permissions,
@@ -316,6 +345,7 @@ async function main(): Promise<void> {
     const info = typeof m === 'string' ? models.find(x => x.id === m) : m;
     agent.opts.model = typeof m === 'string' ? m : m.id;
     agent.opts.contextWindow = info?.contextWindow;
+    agent.opts.client = clientFor(info);
   };
 
   if (!printMode) {

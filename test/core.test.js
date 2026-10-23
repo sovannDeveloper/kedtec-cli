@@ -543,3 +543,35 @@ test('questionsInProse: a reply that asks in prose gets a form; a report does no
   assert.strictEqual(questionsInProse('Should I continue?\n1. Yes'), null);
   assert.strictEqual(questionsInProse('Fixed the bug in src/app.ts:42.'), null);
 });
+
+test('custom models: saved, merged into the list, keys from the environment', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kedtec-home-'));
+  const run = code => require('child_process').execFileSync(process.execPath, ['-e', code], {
+    env: { ...process.env, KEDTEC_HOME: home, MY_KEY: 'sk-from-env' }, cwd: path.join(__dirname, '..'), encoding: 'utf8',
+  });
+  // config.ts reads KEDTEC_HOME when it loads, so each check runs in a process of its own.
+  const out = run(`
+    const cfg = require('./dist/config');
+    const { mergeCustomModels } = require('./dist/client');
+    cfg.saveCustomModel({ id: 'llama3.1:8b', endpoint: 'http://localhost:11434/v1/' });
+    cfg.saveCustomModel({ id: 'gpt-4o-mini', endpoint: 'https://api.example.com/v1', apiKey: '$MY_KEY', contextWindow: 128000 });
+    cfg.saveCustomModel({ id: 'llama3.1:8b', endpoint: 'http://localhost:11434/v1' });
+    const models = cfg.readCustomModels();
+    const merged = mergeCustomModels([{ id: 'support', name: 'support' }, { id: 'gpt-4o-mini', name: 'listed', contextWindow: 1 }], models);
+    const removed = cfg.removeCustomModel('llama3.1:8b');
+    console.log(JSON.stringify({
+      ids: models.map(m => m.id), endpoint: models[1].endpoint,
+      merged: merged.map(m => m.id + (m.custom ? '*' : '')), cw: merged.find(m => m.id === 'gpt-4o-mini').contextWindow,
+      key: cfg.resolveKey('$MY_KEY'), plain: cfg.resolveKey('sk-1'), removed, again: cfg.removeCustomModel('nope'),
+      left: cfg.resolveConfig().customModels.map(m => m.id),
+    }));
+  `);
+  assert.deepStrictEqual(JSON.parse(out), {
+    // Saving an id again replaces it; the trailing slash is dropped.
+    ids: ['gpt-4o-mini', 'llama3.1:8b'], endpoint: 'http://localhost:11434/v1',
+    // A custom model replaces a listed one with the same id, after the listed ones.
+    merged: ['support', 'gpt-4o-mini*', 'llama3.1:8b*'], cw: 128000,
+    key: 'sk-from-env', plain: 'sk-1', removed: true, again: false,
+    left: ['gpt-4o-mini'],
+  });
+});

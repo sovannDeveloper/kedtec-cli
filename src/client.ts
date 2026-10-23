@@ -236,7 +236,29 @@ export async function completeOnce(client: OpenAI, model: string, messages: Chat
   return res.choices?.[0]?.message?.content ?? '';
 }
 
-export interface ModelInfo { id: string; name: string; contextWindow?: number }
+export interface ModelInfo {
+  id: string;
+  name: string;
+  contextWindow?: number;
+  // A model added by hand; with an endpoint (and key) of its own when it is
+  // served somewhere other than the configured endpoint.
+  custom?: boolean;
+  endpoint?: string;
+  apiKey?: string;
+}
+
+// The endpoint's models with the hand-added ones after them; a custom model
+// replaces a listed one of the same id.
+export function mergeCustomModels(listed: ModelInfo[], custom: { id: string; endpoint?: string; apiKey?: string; contextWindow?: number }[]): ModelInfo[] {
+  const ids = new Set(custom.map(m => m.id));
+  return [
+    ...listed.filter(m => !ids.has(m.id)),
+    ...custom.map(m => ({
+      id: m.id, name: m.id, custom: true, endpoint: m.endpoint, apiKey: m.apiKey,
+      contextWindow: m.contextWindow ?? listed.find(l => l.id === m.id)?.contextWindow,
+    })),
+  ];
+}
 
 export async function listModels(endpoint: string, apiKey: string): Promise<ModelInfo[]> {
   const q = endpoint.indexOf('?');

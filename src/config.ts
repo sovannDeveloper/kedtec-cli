@@ -24,6 +24,17 @@ export function normalizeMode(value: unknown): PermissionMode | undefined {
   return PERMISSION_MODES.find(m => m.toLowerCase() === v.toLowerCase());
 }
 
+// A model added by hand (/model add, kedtec models add): one the endpoint does
+// not list, or one served somewhere else with an endpoint and key of its own.
+// Without an endpoint it is asked for on the configured one. A key written as
+// "$NAME" is read from that environment variable when it is used.
+export interface CustomModel {
+  id: string;
+  endpoint?: string;
+  apiKey?: string;
+  contextWindow?: number;
+}
+
 export interface StoredConfig {
   endpoint?: string;
   apiKey?: string;
@@ -33,6 +44,7 @@ export interface StoredConfig {
   permissionMode?: PermissionMode;
   // Command prefixes that run without asking ("npm test", "git status").
   allowedCommands?: string[];
+  customModels?: CustomModel[];
 }
 
 export interface ResolvedConfig {
@@ -43,6 +55,7 @@ export interface ResolvedConfig {
   temperature: number;
   permissionMode: PermissionMode;
   allowedCommands: string[];
+  customModels: CustomModel[];
 }
 
 export function readStoredConfig(): StoredConfig {
@@ -116,7 +129,42 @@ export function resolveConfig(overrides: ConfigOverrides = {}): ResolvedConfig {
       ?? normalizeMode(stored.permissionMode)
       ?? 'default',
     allowedCommands: Array.isArray(stored.allowedCommands) ? stored.allowedCommands : [],
+    customModels: readCustomModels(stored),
   };
+}
+
+export function readCustomModels(stored: StoredConfig = readStoredConfig()): CustomModel[] {
+  if (!Array.isArray(stored.customModels)) return [];
+  return stored.customModels.filter(m => m && typeof m.id === 'string' && m.id.trim()).map(m => ({
+    id: m.id.trim(),
+    endpoint: typeof m.endpoint === 'string' && m.endpoint.trim() ? m.endpoint.trim().replace(/\/+$/, '') : undefined,
+    apiKey: typeof m.apiKey === 'string' && m.apiKey ? m.apiKey : undefined,
+    contextWindow: typeof m.contextWindow === 'number' && m.contextWindow > 0 ? m.contextWindow : undefined,
+  }));
+}
+
+// Added again under the same id, a model replaces the earlier entry.
+export function saveCustomModel(model: CustomModel): void {
+  const stored = readStoredConfig();
+  stored.customModels = [...readCustomModels(stored).filter(m => m.id !== model.id), model];
+  writeStoredConfig(stored);
+}
+
+export function removeCustomModel(id: string): boolean {
+  const stored = readStoredConfig();
+  const before = readCustomModels(stored);
+  const after = before.filter(m => m.id !== id);
+  if (after.length === before.length) return false;
+  stored.customModels = after;
+  writeStoredConfig(stored);
+  return true;
+}
+
+// "$NAME" → the variable's value; anything else is the key itself.
+export function resolveKey(key: string | undefined): string | undefined {
+  if (!key) return undefined;
+  const m = /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(key);
+  return m ? process.env[m[1]] ?? '' : key;
 }
 
 export function maskKey(key: string): string {
