@@ -4,9 +4,14 @@ import OpenAI, { APIConnectionTimeoutError, APIError, APIUserAbortError } from '
 // Completions, which is what the KEDTec API (and every OpenAI-compatible
 // gateway) speaks; the `openai` SDK owns retries and SSE framing.
 
+// A user message with images in it is a list of parts rather than a string.
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 export type ChatMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  | { role: 'user'; content: string | ContentPart[] }
   | { role: 'assistant'; content: string | null; tool_calls?: WireToolCall[]; reasoning_content?: string }
   | { role: 'tool'; tool_call_id: string; content: string };
 
@@ -14,6 +19,11 @@ export interface WireToolCall {
   id: string;
   type: 'function';
   function: { name: string; arguments: string };
+}
+
+// A message's text, with each image as "[image]" (for /compact's transcript).
+export function contentText(content: string | ContentPart[]): string {
+  return typeof content === 'string' ? content : content.map(p => (p.type === 'text' ? p.text : '[image]')).join('');
 }
 
 export interface ToolSchema {

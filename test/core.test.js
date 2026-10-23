@@ -426,3 +426,36 @@ test('shell: Git Bash is found next to git, never the WSL bash on PATH', () => {
   assert.strictEqual(findGitBash({ PATH: 'C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files' }, exists), 'C:\\Program Files\\Git\\bin\\bash.exe');
   assert.strictEqual(findGitBash({ KEDTEC_GIT_BASH: 'E:\\x\\bash.exe' }, exists), null, 'a missing override is not silently replaced');
 });
+
+test('images: dropped paths, @mentions and placeholders become image parts', async () => {
+  const { imageFromFile, pastedImagePaths, sniffMediaType } = require('../dist/images');
+  const { expandMentions, withImages } = require('../dist/repl');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kedtec-img-'));
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+  fs.writeFileSync(path.join(dir, 'shot one.png'), png);
+  fs.writeFileSync(path.join(dir, 'b.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
+  fs.writeFileSync(path.join(dir, 'fake.png'), 'not an image');
+  assert.strictEqual(sniffMediaType(png), 'image/png');
+  // A dragged file is pasted quoted, backslash-escaped, or as a file:// URL.
+  const one = path.join(dir, 'shot one.png');
+  assert.deepStrictEqual(pastedImagePaths(`'${one}'`), [one]);
+  assert.deepStrictEqual(pastedImagePaths(`${one.replace(/ /g, '\\ ')} ${path.join(dir, 'b.jpg')}`), [one, path.join(dir, 'b.jpg')]);
+  assert.deepStrictEqual(pastedImagePaths(`file://${encodeURI(one)}`), [one]);
+  // Anything else pasted stays text.
+  assert.strictEqual(pastedImagePaths(`look at ${one}`), null);
+  assert.strictEqual(pastedImagePaths(path.join(dir, 'missing.png')), null);
+  assert.strictEqual(typeof await imageFromFile(path.join(dir, 'fake.png')), 'string');
+  const img = await imageFromFile(one);
+  assert.strictEqual(img.mediaType, 'image/png');
+
+  // @shot.png is listed as an image, not read as text.
+  const m = expandMentions('see @b.jpg', dir, new Map());
+  assert.deepStrictEqual(m.images, [{ path: path.join(dir, 'b.jpg'), label: 'b.jpg' }]);
+  assert.strictEqual(m.text, 'see @b.jpg');
+
+  assert.strictEqual(withImages('plain', undefined), 'plain');
+  const parts = withImages('fix [Image #1] like [Image #2], and [Image #1] again', new Map([[1, img]]), [img]);
+  assert.deepStrictEqual(parts.map(p => p.type), ['text', 'image_url', 'text', 'image_url']);
+  assert.strictEqual(parts[0].text, 'fix [Image #1]');
+  assert.ok(parts[1].image_url.url.startsWith('data:image/png;base64,'));
+});

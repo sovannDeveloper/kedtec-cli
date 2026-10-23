@@ -54,7 +54,7 @@ export class IdeWatcher {
   private poll: NodeJS.Timeout | undefined;
   private key = '';
 
-  constructor(private readonly root: string, private readonly onChange: (state: IdeState | null) => void) {}
+  constructor(private readonly root: string, private readonly onChange: (state: IdeState | null) => void) { }
 
   start(): void {
     this.read();
@@ -101,7 +101,7 @@ export function ideLabel(state: IdeState | null): string {
     const lines = `${n} line${n === 1 ? '' : 's'}`;
     return ranges.length === 1 ? `⧉ ${lines} selected` : `⧉ ${lines} in ${ranges.length} selections`;
   }
-  return `⧉ In ${path.basename(state.file)}`;
+  return `⧉ ${path.basename(state.file)}`;
 }
 
 // What the editor adds to a message: the selection when there is one, else a
@@ -110,7 +110,7 @@ export function ideLabel(state: IdeState | null): string {
 export class IdeContext {
   private lastSent = '';
 
-  constructor(private readonly root: string) {}
+  constructor(private readonly root: string) { }
 
   forMessage(state: IdeState | null): { text: string; note: string } | null {
     if (!state?.file) return null;

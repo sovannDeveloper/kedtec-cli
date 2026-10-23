@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as readline from 'readline';
 import { PassThrough } from 'stream';
 import { HOME_DIR } from './config';
+import { ImageAttachment } from './images';
 import { c, columns } from './ui';
 
 // Terminal input. A readline interface exists only while a question is being
@@ -57,7 +58,9 @@ export function expectReport(): void {
   setTimeout(() => { reportsExpected = Math.max(0, reportsExpected - 1); }, 1000).unref();
 }
 
-export type AskResult = { kind: 'line'; text: string } | { kind: 'interrupt' } | { kind: 'eof' };
+// `images` are the ones pasted into the line (screen.ts), by the number in
+// their "[Image #n]" placeholder; only those whose placeholder is still there.
+export type AskResult = { kind: 'line'; text: string; images?: Map<number, ImageAttachment> } | { kind: 'interrupt' } | { kind: 'eof' };
 
 const HISTORY_FILE = path.join(HOME_DIR, 'history');
 export const HISTORY_SIZE = 500;

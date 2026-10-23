@@ -69,6 +69,13 @@ Print mode (`-p`, CI) never asks.
 | `!npm test` | run a command yourself; the output joins the conversation |
 | `@src/app.ts` | attach a file to your message |
 | `@src/app.ts#L10-20` · `@src/app.ts:10-20` · `@src/app.ts #10-20` | attach just those lines (works with any editor, or none) |
+| `ctrl+v` (or `alt+v`) | paste an image from the clipboard; it shows as `[Image #1]` in the box. Dragging an image file onto the terminal does the same |
+| `@screenshot.png` | attach an image file (PNG, JPEG, GIF, WebP) |
+
+Images go to the model as `image_url` parts, so the model has to accept images.
+An image over 5 MB is scaled down on macOS (with `sips`) and refused elsewhere.
+Reading the clipboard uses `osascript` on macOS, PowerShell on Windows, and
+`wl-paste` or `xclip` on Linux.
 
 Attachments share a budget of 60,000 characters per message, since the API
 refuses a message over 100,000. A file over it is not attached: the CLI says so,

@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { ChatMessage, KbSource, ResearchPage, StoppedError, completeOnce, describeError, streamTurn } from './client';
+import { ChatMessage, ContentPart, KbSource, ResearchPage, StoppedError, completeOnce, contentText, describeError, streamTurn } from './client';
 import { Permissions } from './permissions';
 import { TOOLS, Todo, ToolOutcome, findTool, toolSchemas } from './tools';
 
@@ -56,7 +56,7 @@ export class Agent {
     return toolSchemas(TOOLS);
   }
 
-  async run(input: string, events: AgentEvents, signal: AbortSignal): Promise<RunResult> {
+  async run(input: string | ContentPart[], events: AgentEvents, signal: AbortSignal): Promise<RunResult> {
     if (this.shouldCompact()) {
       events.notice('Context is nearly full — compacting the conversation first.');
       try { await this.compact(signal); } catch (err) { events.notice(`Compaction failed: ${describeError(err)}`); }
@@ -191,7 +191,7 @@ export class Agent {
         const calls = (m.tool_calls ?? []).map(t => `[called ${t.function.name} ${clipText(t.function.arguments, 300)}]`).join('\n');
         return `[assistant]\n${m.content ?? ''}${calls ? `\n${calls}` : ''}`;
       }
-      return `[${m.role}]\n${clipText(m.content, 6000)}`;
+      return `[${m.role}]\n${clipText(contentText(m.content), 6000)}`;
     }).join('\n\n');
     const summary = await completeOnce(this.opts.client, this.opts.model, [
       {

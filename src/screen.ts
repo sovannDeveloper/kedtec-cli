@@ -1,4 +1,5 @@
 import * as readline from 'readline';
+import { ImageAttachment, clipboardImage, imageFromFile, pastedImagePaths } from './images';
 import { AskResult, HISTORY_SIZE, Prompter, expectReport, installInputFilter, keyStream, loadHistory, saveHistory } from './input';
 import { c, stripAnsi } from './ui';
 
@@ -88,6 +89,12 @@ function boundaries(text: string): number[] {
 }
 
 interface Keypress { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string }
+
+// The placeholder a pasted image leaves in the input; repl.ts puts the image
+// itself in the message where it stands.
+export function imageTag(n: number): string {
+  return `[Image #${n}]`;
+}
 
 
 // One logical line, possibly coloured, cut into rows of at most `width`
@@ -231,6 +238,11 @@ export class Screen implements Prompter {
   onShiftTab?: () => void;
   // The loading line above the input box.
   private activity = '';
+  // A note in the loading line's place while editing ("no image on the
+  // clipboard"), gone at the next key.
+  private hint = '';
+  // Images pasted into the current input; "[Image #n]" is images[n - 1].
+  private images: ImageAttachment[] = [];
 
   // Rows scrolled up from the bottom of the conversation; 0 follows new output.
   private scroll = 0;
@@ -486,7 +498,8 @@ export class Screen implements Prompter {
     const lead = this.lead();
     const promptWidth = stripAnsi(lead).length;
 
-    const rows: string[] = [this.fit(this.activity), ...this.suggestionRows(cols)];
+    const top = this.activity || (this.editing && this.hint ? `  \x1b[90m${this.hint}\x1b[39m` : '');
+    const rows: string[] = [this.fit(top), ...this.suggestionRows(cols)];
     const ruleRow = rows.length;
     rows.push(rule);
     for (let i = 0; i < boxRows; i++) {
@@ -585,13 +598,25 @@ export class Screen implements Prompter {
       this.secret = !!opts.secret;
       this.placeholder = opts.placeholder ?? '';
       this.editing = true;
+      this.images = [];
+      this.hint = '';
       let histIdx = -1;
       let draft = '';
       let pasting = false;
+      let pasteStart = 0;
+      let closed = false;
       this.render();
 
       const finish = (result: AskResult) => {
+        closed = true;
         if (result.kind === 'line' && this.shell) result = { kind: 'line', text: `!${result.text}` };
+        if (result.kind === 'line' && this.images.length) {
+          const images = new Map<number, ImageAttachment>();
+          this.images.forEach((img, i) => { if (result.kind === 'line' && result.text.includes(imageTag(i + 1))) images.set(i + 1, img); });
+          if (images.size) result = { ...result, images };
+        }
+        this.images = [];
+        this.hint = '';
         this.shell = false;
         this.closeSuggestions();
         keys.off('keypress', onKey);
@@ -640,6 +665,41 @@ export class Screen implements Prompter {
         this.text = this.text.slice(0, s.start) + it.value + this.text.slice(s.end);
         this.cursor = s.start + it.value.length;
       };
+      // An image goes into the text as its placeholder, at the cursor.
+      const addImage = (img: ImageAttachment) => {
+        this.images.push(img);
+        const before = this.text.slice(0, this.cursor);
+        insert(`${before && !/\s$/.test(before) ? ' ' : ''}${imageTag(this.images.length)} `);
+      };
+      // ctrl+v: what is on the clipboard comes in as an image. Reading it takes
+      // a moment, and the prompt may be gone by then.
+      const pasteImage = () => {
+        this.hint = 'Pasting image…';
+        this.render();
+        void clipboardImage().then(img => {
+          if (closed) return;
+          this.hint = img === null ? 'No image on the clipboard' : typeof img === 'string' ? `Cannot paste the image: ${img}` : '';
+          if (img && typeof img !== 'string') addImage(img);
+          this.updateSuggestions();
+          this.render();
+        });
+      };
+      // A paste that is only the paths of image files (a file dragged onto the
+      // terminal) attaches those images instead of the paths.
+      const pasteEnded = async () => {
+        const start = pasteStart, end = this.cursor;
+        const pasted = this.text.slice(start, end);
+        const paths = pastedImagePaths(pasted);
+        if (!paths) return;
+        const loaded = await Promise.all(paths.map(p => imageFromFile(p)));
+        const failed = loaded.findIndex(img => typeof img === 'string');
+        // Edited meanwhile: the paths stay as typed.
+        if (closed || this.text.slice(start, end) !== pasted) return;
+        if (failed >= 0) { this.hint = `Cannot attach ${paths[failed]}: ${loaded[failed]}`; return; }
+        this.text = this.text.slice(0, start) + this.text.slice(end);
+        this.cursor = start;
+        for (const img of loaded) addImage(img as ImageAttachment);
+      };
 
       let inReport = false;
       const onKey = (str: string | undefined, key: Keypress | undefined) => {
@@ -654,8 +714,14 @@ export class Screen implements Prompter {
           if (str === 'R') return;
         }
         const name = key?.name;
-        if (name === 'paste-start') { pasting = true; return; }
-        if (name === 'paste-end') { pasting = false; this.updateSuggestions(); this.render(); return; }
+        if (name === 'paste-start') { pasting = true; pasteStart = this.cursor; return; }
+        if (name === 'paste-end') {
+          pasting = false;
+          void pasteEnded().then(() => { if (!closed) { this.updateSuggestions(); this.render(); } });
+          return;
+        }
+        if (this.hint) this.hint = '';
+        if (name === 'v' && (key?.ctrl || key?.meta) && !this.secret) return pasteImage();
         if (pasting) {
           if (name === 'return' || name === 'enter') insert('\n');
           else if (str && !key?.ctrl) insert(str.replace(/\r\n?/g, '\n'));

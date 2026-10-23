@@ -2,8 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import OpenAI from 'openai';
 import { Agent } from './agent';
-import { ModelInfo, describeError, listModels } from './client';
+import { ContentPart, ModelInfo, describeError, listModels } from './client';
 import { PERMISSION_MODES, PermissionMode, ResolvedConfig, maskKey, normalizeMode, readStoredConfig, writeStoredConfig } from './config';
+import { ImageAttachment, dataUrl, imageFromFile, isImagePath } from './images';
 import { LineInput, PanelTab, Prompter, TurnKeys, select, tabbedPanel } from './input';
 import { Asker, PermissionRequest, Permissions } from './permissions';
 import { loadInstructions } from './prompt';
@@ -159,7 +160,7 @@ function helpTabs(fullScreen: boolean): PanelTab[] {
       c.bold('Shortcuts'),
       ...columnLayout([
         ['! for shell mode', '/ for commands', '@ for file paths', '\\ at line end for newline'],
-        ['esc to clear input', 'esc to interrupt KEDTec', 'shift + tab to cycle modes', 'ctrl + j for newline', 'tab to complete / and @'],
+        ['esc to clear input', 'esc to interrupt KEDTec', 'shift + tab to cycle modes', 'ctrl + j for newline', 'tab to complete / and @', ...(fullScreen ? ['ctrl + v to paste an image'] : [])],
         [
           '↑ / ↓ for history',
           ...(fullScreen ? ['pgup / pgdn to scroll', 'shift + ↑ / ↓ to scroll a line', 'ctrl + l to clear the screen'] : []),
@@ -212,9 +213,12 @@ export function parseMention(raw: string): { file: string; start?: number; end?:
 // Only files inside the project, and the read counts as a read for the edit
 // guard, as read_file with offset/limit does. A file too big to carry is left
 // out and listed in `skipped`; its name stays in the text for the model to read.
-export function expandMentions(text: string, root: string, readState: Map<string, number>): { text: string; attached: string[]; skipped: string[] } {
+// An image ("@shot.png") is not read here but listed in `images`, to go with
+// the message as an image.
+export function expandMentions(text: string, root: string, readState: Map<string, number>): { text: string; attached: string[]; skipped: string[]; images: { path: string; label: string }[] } {
   const attached: string[] = [];
   const skipped: string[] = [];
+  const images: { path: string; label: string }[] = [];
   const blocks: string[] = [];
   let budget = MAX_ATTACH_CHARS;
   for (const m of text.matchAll(/(^|\s)@([^\s@]+)(?:[ \t]+(#L?\d+(?:-L?\d+)?)(?=[\s.,;:!?)]|$))?/g)) {
@@ -228,6 +232,10 @@ export function expandMentions(text: string, root: string, readState: Map<string
     try {
       const st = fs.statSync(abs);
       if (!st.isFile()) continue;
+      if (isImagePath(abs)) {
+        if (!images.some(img => img.path === abs)) images.push({ path: abs, label: rel });
+        continue;
+      }
       if (st.size > (start === undefined ? MAX_ATTACH_CHARS : MAX_RANGED_FILE_BYTES)) {
         skipped.push(`${label} (${st.size.toLocaleString('en-US')} bytes)`);
         continue;
@@ -250,8 +258,32 @@ export function expandMentions(text: string, root: string, readState: Map<string
       readState.set(abs, st.mtimeMs);
     } catch { /* not a file: leave the text alone */ }
   }
-  if (blocks.length === 0) return { text, attached, skipped };
-  return { text: `${text}\n\nAttached files (line-numbered as read_file returns them):\n\n${blocks.join('\n\n')}`, attached, skipped };
+  if (blocks.length === 0) return { text, attached, skipped, images };
+  return { text: `${text}\n\nAttached files (line-numbered as read_file returns them):\n\n${blocks.join('\n\n')}`, attached, skipped, images };
+}
+
+// The message as the model gets it: each pasted image right after its
+// "[Image #n]" (its first one, so a placeholder inside an attached file is
+// left alone), and the images mentioned with @ at the end. Plain text when
+// there are none.
+export function withImages(text: string, pasted: Map<number, ImageAttachment> | undefined, mentioned: ImageAttachment[] = []): string | ContentPart[] {
+  if (!pasted?.size && mentioned.length === 0) return text;
+  const parts: ContentPart[] = [];
+  const image = (img: ImageAttachment): ContentPart => ({ type: 'image_url', image_url: { url: dataUrl(img) } });
+  const placed = new Set<number>();
+  let last = 0;
+  for (const m of text.matchAll(/\[Image #(\d+)\]/g)) {
+    const n = Number(m[1]);
+    const img = pasted?.get(n);
+    if (!img || placed.has(n)) continue;
+    placed.add(n);
+    const end = m.index! + m[0].length;
+    parts.push({ type: 'text', text: text.slice(last, end) }, image(img));
+    last = end;
+  }
+  if (last < text.length) parts.push({ type: 'text', text: text.slice(last) });
+  parts.push(...mentioned.map(image));
+  return parts;
 }
 
 export async function runRepl(opts: ReplOptions): Promise<void> {
@@ -351,10 +383,17 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     saveSession(session);
   };
 
-  const send = async (text: string) => {
-    const { text: mentioned, attached, skipped } = expandMentions(text, root, agent.readState);
+  const send = async (text: string, pasted?: Map<number, ImageAttachment>) => {
+    const { text: mentioned, attached, skipped, images } = expandMentions(text, root, agent.readState);
     const fromIde = ideContext.forMessage(ide.state);
     const expanded = fromIde ? `${mentioned}\n\n${fromIde.text}` : mentioned;
+    const mentionedImages: ImageAttachment[] = [];
+    for (const { path: file, label } of images) {
+      const img = await imageFromFile(file);
+      if (typeof img === 'string') console.log(c.yellow(`  ⎿  cannot attach ${label}: ${img}`));
+      else { mentionedImages.push(img); attached.push(label); }
+    }
+    if (pasted?.size) console.log(c.gray(`  ⎿  attached ${pasted.size} image${pasted.size === 1 ? '' : 's'}`));
     if (fromIde?.note) console.log(c.gray(`  ${fromIde.note}`));
     if (attached.length) console.log(c.gray(`  ⎿  attached ${attached.join(', ')}`));
     if (skipped.length) console.log(c.yellow(`  ⎿  too big to attach: ${skipped.join(', ')} — name lines, e.g. @file#L1-200`));
@@ -365,7 +404,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     keys.start();
     let done = '';
     try {
-      const result = await agent.run(expanded, renderer, current.signal);
+      const result = await agent.run(withImages(expanded, pasted, mentionedImages), renderer, current.signal);
       if (result.error) console.log(`\n${c.red('✗')} ${result.error}`);
       // "✻ Baked for 9s" under a finished answer; an interrupted turn has
       // already said so.
@@ -568,7 +607,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       persist();
       continue;
     }
-    await send(text.startsWith('//') ? text.slice(1) : text);
+    await send(text.startsWith('//') ? text.slice(1) : text, answer.images);
   }
   persist();
   ide.stop();
