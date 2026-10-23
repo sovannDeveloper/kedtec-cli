@@ -49,27 +49,38 @@ export type CommandItem =
 /**
  * `cmd` as words and operators, or null when it cannot be parsed as a plain
  * command at all — an unterminated quote, a trailing backslash, or any form of
- * substitution or expansion (`$(…)`, `${…}`, backticks, `$HOME`, `$1`, `$'…'`).
+ * substitution or expansion (`$(…)`, `${…}`, backticks, `$HOME`, `$1`, `$'…'`,
+ * `{a,b}`, `{1..3}`).
  *
  * Substitution is refused rather than analyzed: the whole point of it is that
  * the text that finally runs is not the text being looked at, so a classifier
  * that let it through would be deciding about a different command than the one
  * the shell executes. A plain `$HOME` is the same thing: `cat $HOME/.ssh/id_rsa`
- * reads as a path inside the project here and as the user's key to bash.
+ * reads as a path inside the project here and as the user's key to bash. So is
+ * brace expansion: `cat {../x,}` is one odd name inside the project here and
+ * `cat ../x` to bash, and `cat {~/.ssh/id_rsa,}` is the key again.
  */
 export function tokenizeCommand(cmd: string): CommandItem[] | null {
   const items: CommandItem[] = [];
   let cur = '';
   let quoted = false;
   let started = false;
+  // An unquoted `{` in the current word, and whether any word so far would be
+  // brace-expanded. A word with a `{`, a `}` and a `,` or `..` between them is
+  // treated as one, quoted parts included — `{'..',x}` expands too. `{}` (find
+  // -exec) has neither, so it stays a literal.
+  let brace = false;
+  let expands = false;
   let i = 0;
 
   const endWord = () => {
     if (!started) return;
+    if (brace && cur.includes('}') && /,|\.\./.test(cur)) expands = true;
     items.push({ kind: 'word', text: cur, quoted });
     cur = '';
     quoted = false;
     started = false;
+    brace = false;
   };
 
   while (i < cmd.length) {
@@ -143,13 +154,14 @@ export function tokenizeCommand(cmd: string): CommandItem[] | null {
       continue;
     }
 
+    if (c === '{') brace = true;
     cur += c;
     started = true;
     i++;
   }
 
   endWord();
-  return items;
+  return expands ? null : items;
 }
 
 // ── the allowlist ────────────────────────────────────────────────────────────
@@ -190,10 +202,71 @@ const FIND_WRITE_ACTIONS = new Set([
 // flag writing to a file — is refused, because telling a read-only `sed` script
 // from a writing one in general means implementing sed's grammar.
 const SED_READ_SCRIPT = /^\s*\$?\d*(?:\s*,\s*(?:\$|\d+))?\s*[pP]\s*$/;
+// The only `sed` options allowed beside it. `-e` and `-f` are out: a second
+// script is where `w ../../file` and GNU sed's `e command` hide, after a first
+// one that passes the check above.
+const SED_READ_FLAGS = /^-[nErsuz]+$/;
 
 /** True when `arg` is an option rather than an operand. */
 function isFlag(arg: string): boolean {
   return arg.startsWith('-') && arg !== '-' && arg !== '--';
+}
+
+/**
+ * The part of a word that may name a path: an operand whole, or the value of a
+ * `--name=value` option — `diff --from-file=/etc/passwd x` prints the file just
+ * as well as an operand would. A short option's attached value (`-I/usr/x`)
+ * cannot be told from bundled flags, so it is not checked; the readers whose
+ * short options take a file are handled in `readerOptionRisk`.
+ */
+function pathPart(word: string): string | null {
+  if (!isFlag(word)) return word;
+  const eq = word.indexOf('=');
+  return word.startsWith('--') && eq !== -1 ? word.slice(eq + 1) : null;
+}
+
+/**
+ * Why an allowlisted reader is *not* a read with these options, or ''.
+ *
+ * The allowlist is about executables, but several of them write a file or run
+ * a program when asked to through an option: `sort -o`, `uniq in out`,
+ * `tree -o`, `rg --pre`, a pager, `file -C`. `jq` can print the environment,
+ * and `--files0-from` reads its list of files from a file, which can name
+ * anything. Each is refused here; a false negative only costs a prompt.
+ */
+function readerOptionRisk(exe: string, args: string[]): string {
+  const long = (...names: string[]) => args.find(a => names.some(n => a === n || a.startsWith(`${n}=`)));
+  const short = (letter: string) => args.find(a => /^-[A-Za-z]+$/.test(a) && a.includes(letter));
+  const files0 = args.find(a => /^--?files0-from/.test(a));
+  if (files0) return `${exe} ${files0} reads files named in another file`;
+  switch (exe) {
+    case 'sort': {
+      const bad = long('--output', '--compress-program') ?? short('o');
+      return bad ? `sort ${bad} writes a file or runs a program` : '';
+    }
+    case 'uniq':
+      return args.filter(a => !isFlag(a)).length > 1 ? 'uniq with two operands writes the second' : '';
+    case 'tree':
+      return short('o') ? 'tree -o writes a file' : '';
+    case 'rg': {
+      const bad = long('--pre', '--pre-glob');
+      return bad ? `rg ${bad} runs a program on every file` : '';
+    }
+    case 'ag': case 'ack': {
+      const bad = long('--pager');
+      return bad ? `${exe} ${bad} runs a program` : '';
+    }
+    case 'file':
+      return long('--compile') ?? short('C') ? 'file -C writes a compiled magic file' : '';
+    case 'jq':
+      // `env` and `$ENV` are the environment, where API keys live; modules
+      // (`-L`, import, include) load files from outside the project.
+      if (args.some(a => /\benv\b|\$ENV\b/.test(a))) return 'jq env prints the environment';
+      if (long('--library-path') || args.some(a => /^-L/.test(a) || /\b(?:import|include)\b/.test(a))) return 'jq loads modules from outside the project';
+      return '';
+    default:
+      return '';
+  }
 }
 
 // ── path containment ─────────────────────────────────────────────────────────
@@ -203,12 +276,26 @@ function isFlag(arg: string): boolean {
  * used, so a path being named before it exists still resolves through whatever
  * real directory does exist above it.
  */
-function realPathOfNearest(p: string): string {
+export function realPathOfNearest(p: string): string {
   let cur = path.resolve(p);
-  for (;;) {
-    try { return fs.realpathSync(cur); } catch { /* keep walking up */ }
+  const rest: string[] = [];
+  for (let hops = 0; ;) {
+    try { return path.join(fs.realpathSync(cur), ...rest); } catch { /* missing, or a link to nowhere */ }
+    // A link whose target does not exist yet fails realpath just as a missing
+    // file does, but writing through it creates the target. So it is followed
+    // by hand, not walked past: `notes.md -> ~/.config/x` committed in a repo
+    // would otherwise count as the project's own notes.md. The hop limit ends
+    // a link loop.
+    let target: string | undefined;
+    try { if (hops < 40 && fs.lstatSync(cur).isSymbolicLink()) target = fs.readlinkSync(cur); } catch { /* not a link */ }
+    if (target !== undefined) {
+      cur = path.resolve(path.dirname(cur), target);
+      hops++;
+      continue;
+    }
     const parent = path.dirname(cur);
-    if (parent === cur) return cur;
+    if (parent === cur) return path.join(cur, ...rest);
+    rest.unshift(path.basename(cur));
     cur = parent;
   }
 }
@@ -271,7 +358,7 @@ export function classifyCommand(command: string, cwd: string, root: string, shel
 
   const items = tokenizeCommand(text);
   if (!items) {
-    return { readOnly: false, reason: 'it uses quoting or substitution this cannot verify' };
+    return { readOnly: false, reason: 'it uses quoting, substitution or expansion this cannot verify' };
   }
 
   // A pipeline of reads is a read. Anything else — `;`, `&&`, `&`, a redirect,
@@ -311,14 +398,15 @@ export function classifyCommand(command: string, cwd: string, root: string, shel
     }
 
     if (exe === 'sed') {
-      // `-i` edits in place, and every other flag is either irrelevant or an
-      // extra script. Only the printing form survives.
+      // `-i` edits in place, `-e`/`-f` add scripts, and the rest of sed's
+      // options are not needed to print lines. Only `sed -n '<range>p' file…`
+      // survives: its first operand is the script, the others are files.
       const flags = args.filter(a => isFlag(a.text)).map(a => a.text);
       if (flags.some(f => f.startsWith('-i') || f === '--in-place')) {
         return { readOnly: false, reason: 'sed -i edits the file in place' };
       }
-      if (!flags.includes('-n')) {
-        return { readOnly: false, reason: 'sed is only treated as a read with -n and a print script' };
+      if (!flags.every(f => SED_READ_FLAGS.test(f)) || !flags.some(f => f.includes('n'))) {
+        return { readOnly: false, reason: 'sed is only treated as a read as `sed -n <range>p <files>`' };
       }
       const scripts = args.filter(a => !isFlag(a.text));
       if (scripts.length === 0 || !SED_READ_SCRIPT.test(scripts[0].text)) {
@@ -326,13 +414,17 @@ export function classifyCommand(command: string, cwd: string, root: string, shel
       }
     }
 
-    // Containment applies to operands only. A flag is not a path, and a grep
+    const optionRisk = readerOptionRisk(exe, args.map(a => a.text));
+    if (optionRisk) return { readOnly: false, reason: optionRisk };
+
+    // Containment applies to operands and `--name=value` values. A grep
     // pattern that happens to start with `/` is a regex — but it is also
     // indistinguishable from a path here, so it is checked like one and a
     // rooted pattern costs a confirmation rather than being trusted.
     for (const a of args) {
-      if (isFlag(a.text)) continue;
-      if (!argStaysInside(a.text, cwd, root)) {
+      const p = pathPart(a.text);
+      if (p === null) continue;
+      if (!argStaysInside(p, cwd, root)) {
         return { readOnly: false, reason: `"${a.text}" is outside the workspace` };
       }
     }
@@ -380,8 +472,9 @@ export function commandReach(command: string, cwd: string, root: string, shell: 
 
   const outside: string[] = [];
   for (const it of items) {
-    if (it.kind !== 'word' || isFlag(it.text) || !it.text) continue;
-    if (argStaysInside(it.text, cwd, root)) continue;
+    if (it.kind !== 'word') continue;
+    const p = pathPart(it.text);
+    if (!p || argStaysInside(p, cwd, root)) continue;
     if (!outside.includes(it.text)) outside.push(it.text);
     if (outside.length >= MAX_REPORTED_OUTSIDE) break;
   }
@@ -503,13 +596,15 @@ function segmentRisk(words: string[], pipedFrom: string | undefined): string {
 export function assessRisk(command: string, cwd: string, root: string, shell: ShellKind = shellKind()): CommandRisk {
   if (shell === 'cmd') return { reason: CMD_REASON };
   const items = tokenizeCommand((command ?? '').trim());
-  if (!items) return { reason: 'it uses substitution or quoting that cannot be checked' };
+  if (!items) return { reason: 'it uses substitution, expansion or quoting that cannot be checked' };
 
   for (const it of items) {
-    if (it.kind !== 'word' || isFlag(it.text) || !it.text || HARMLESS_PATHS.has(it.text)) continue;
+    if (it.kind !== 'word') continue;
+    const p = pathPart(it.text);
+    if (!p || HARMLESS_PATHS.has(p)) continue;
     // A URL is an address, not a path in this project's filesystem.
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(it.text)) continue;
-    if (!argStaysInside(it.text, cwd, root)) return { reason: `"${it.text}" is outside the project` };
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(p)) continue;
+    if (!argStaysInside(p, cwd, root)) return { reason: `"${it.text}" is outside the project` };
   }
 
   let words: string[] = [];

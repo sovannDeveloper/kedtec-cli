@@ -28,6 +28,8 @@ export interface ReplOptions {
   session: SessionFile;
   initialPrompt?: string;
   setModel(model: ModelInfo | string): void;
+  // False with --no-project-config: the project's instruction files are not read.
+  projectConfig: boolean;
 }
 
 const MODE_LABEL: Record<PermissionMode, string> = {
@@ -191,7 +193,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       `${c.gray('mode ')}  ${modeColor(permissions.mode, MODE_LABEL[permissions.mode])}`,
       `${c.gray('cwd  ')}  ${clip(root, 60)}`,
     ]));
-    const instr = loadInstructions(root).map(f => displayPath(f.path, root));
+    const instr = loadInstructions(root, opts.projectConfig).map(f => displayPath(f.path, root));
     if (instr.length) console.log(c.gray(`  instructions: ${instr.join(', ')}`));
     console.log(c.gray('  /help for commands · ! runs a shell command · @file attaches a file · esc interrupts\n'));
   };
@@ -338,7 +340,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
         console.log(`  ${c.gray('input tokens ')} ${agent.usage.prompt.toLocaleString()}\n  ${c.gray('output tokens')} ${agent.usage.completion.toLocaleString()}\n  ${c.gray('last request ')} ${agent.lastPromptTokens.toLocaleString()} tokens of context${agent.opts.contextWindow ? ` / ${agent.opts.contextWindow.toLocaleString()}` : ''}`);
         return true;
       case 'status': {
-        const instr = loadInstructions(root);
+        const instr = loadInstructions(root, opts.projectConfig);
         console.log([
           `  ${c.gray('endpoint')}  ${opts.config.endpoint}`,
           `  ${c.gray('api key ')}  ${maskKey(opts.config.apiKey)}`,

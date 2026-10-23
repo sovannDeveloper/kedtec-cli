@@ -206,7 +206,7 @@ async function runRepl(opts) {
             `${ui_1.c.gray('mode ')}  ${modeColor(permissions.mode, MODE_LABEL[permissions.mode])}`,
             `${ui_1.c.gray('cwd  ')}  ${(0, ui_1.clip)(root, 60)}`,
         ]));
-        const instr = (0, prompt_1.loadInstructions)(root).map(f => (0, tools_1.displayPath)(f.path, root));
+        const instr = (0, prompt_1.loadInstructions)(root, opts.projectConfig).map(f => (0, tools_1.displayPath)(f.path, root));
         if (instr.length)
             console.log(ui_1.c.gray(`  instructions: ${instr.join(', ')}`));
         console.log(ui_1.c.gray('  /help for commands · ! runs a shell command · @file attaches a file · esc interrupts\n'));
@@ -390,7 +390,7 @@ async function runRepl(opts) {
                 console.log(`  ${ui_1.c.gray('input tokens ')} ${agent.usage.prompt.toLocaleString()}\n  ${ui_1.c.gray('output tokens')} ${agent.usage.completion.toLocaleString()}\n  ${ui_1.c.gray('last request ')} ${agent.lastPromptTokens.toLocaleString()} tokens of context${agent.opts.contextWindow ? ` / ${agent.opts.contextWindow.toLocaleString()}` : ''}`);
                 return true;
             case 'status': {
-                const instr = (0, prompt_1.loadInstructions)(root);
+                const instr = (0, prompt_1.loadInstructions)(root, opts.projectConfig);
                 console.log([
                     `  ${ui_1.c.gray('endpoint')}  ${opts.config.endpoint}`,
                     `  ${ui_1.c.gray('api key ')}  ${(0, config_1.maskKey)(opts.config.apiKey)}`,

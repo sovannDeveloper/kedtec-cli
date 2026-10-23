@@ -38,6 +38,7 @@ exports.resolvePath = resolvePath;
 exports.isInsideRoot = isInsideRoot;
 exports.displayPath = displayPath;
 exports.globToRegExp = globToRegExp;
+exports.commandEnv = commandEnv;
 exports.runShell = runShell;
 exports.toolSchemas = toolSchemas;
 exports.findTool = findTool;
@@ -60,27 +61,15 @@ function resolvePath(root, p) {
     const raw = typeof p === 'string' && p.trim() ? p.trim() : '.';
     return path.resolve(root, expandHome(raw));
 }
-function realNearest(p) {
-    let cur = p;
-    for (;;) {
-        try {
-            return fs.realpathSync(cur);
-        }
-        catch { /* walk up */ }
-        const parent = path.dirname(cur);
-        if (parent === cur)
-            return cur;
-        cur = parent;
-    }
-}
 // Lexically and after following symlinks, so a link committed inside the repo
-// that points at ~/.ssh does not count as inside.
+// that points at ~/.ssh — or at a file there that does not exist yet — does
+// not count as inside.
 function isInsideRoot(abs, root) {
     const inside = (child, parent) => {
         const rel = path.relative(parent, child);
         return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
     };
-    return inside(abs, root) && inside(realNearest(abs), realNearest(root));
+    return inside(abs, root) && inside((0, shellSafety_1.realPathOfNearest)(abs), (0, shellSafety_1.realPathOfNearest)(root));
 }
 function displayPath(abs, root) {
     const rel = path.relative(root, abs);
@@ -556,6 +545,19 @@ const grepFiles = {
 };
 const DEFAULT_COMMAND_TIMEOUT = 120_000;
 const MAX_COMMAND_TIMEOUT = 600_000;
+// The environment a command runs with: this process's, minus the API key the
+// CLI authenticates with. A test, a postinstall script or a prompt-injected
+// `printenv` would otherwise put the key into the conversation, a CI log or a
+// PR comment. The key is whichever variable config.ts takes it from:
+// KEDTEC_API_KEY, else OPENAI_API_KEY (which a project's own code may also
+// want — set KEDTEC_API_KEY for this CLI and that one is left alone).
+function commandEnv(env = process.env) {
+    const out = { ...env, KEDTEC: '1' };
+    delete out.KEDTEC_API_KEY;
+    if (!env.KEDTEC_API_KEY?.trim())
+        delete out.OPENAI_API_KEY;
+    return out;
+}
 function runShell(command, cwd, timeoutMs, signal) {
     return new Promise(resolve => {
         const sh = (0, shell_1.currentShell)();
@@ -565,7 +567,7 @@ function runShell(command, cwd, timeoutMs, signal) {
         // stopped with taskkill /T instead.
         const detached = !windows;
         const child = (0, child_process_1.spawn)(sh.file, sh.args(command), {
-            cwd, env: { ...process.env, KEDTEC: '1' }, stdio: ['ignore', 'pipe', 'pipe'], detached, windowsHide: true,
+            cwd, env: commandEnv(), stdio: ['ignore', 'pipe', 'pipe'], detached, windowsHide: true,
         });
         let output = '';
         let timedOut = false, interrupted = false;

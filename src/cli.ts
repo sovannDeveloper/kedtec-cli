@@ -38,6 +38,8 @@ ${c.bold('Options')}
       --max-tokens <n>             cap on each reply's length
       --output-format <fmt>        print mode: text (default) | json
       --cwd <dir>                  project root (default: current directory)
+      --no-project-config          ignore the project's KEDTEC.md / CLAUDE.md / AGENTS.md and
+                                   .kedtec/settings.json (an untrusted checkout, e.g. CI on a PR)
       --verbose                    print mode: show tool activity and reasoning on stderr
       --no-color                   plain output
   -v, --version · -h, --help
@@ -65,6 +67,7 @@ interface Args {
   outputFormat: 'text' | 'json';
   cwd?: string;
   verbose: boolean;
+  projectConfig: boolean;
 }
 
 function die(message: string, code = 1): never {
@@ -73,7 +76,7 @@ function die(message: string, code = 1): never {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { positional: [], print: false, cont: false, maxTurns: 100, outputFormat: 'text', verbose: false };
+  const a: Args = { positional: [], print: false, cont: false, maxTurns: 100, outputFormat: 'text', verbose: false, projectConfig: true };
   const value = (i: number, flag: string): string => {
     const v = argv[i + 1];
     if (v === undefined || (v.startsWith('-') && v.length > 1)) die(`${flag} needs a value`);
@@ -111,6 +114,7 @@ function parseArgs(argv: string[]): Args {
       }
       case '--cwd': a.cwd = take(); break;
       case '--verbose': a.verbose = true; break;
+      case '--no-project-config': a.projectConfig = false; break;
       case '--no-color': setColor(false); break;
       default:
         if (arg.startsWith('-') && arg.length > 1 && arg !== '-') die(`unknown option ${arg} (see --help)`);
@@ -280,7 +284,8 @@ async function main(): Promise<void> {
   if (!startModel) die('the endpoint lists no models; pass --model <id>');
 
   const client = createClient(cfg.endpoint, cfg.apiKey);
-  const permissions = new Permissions(cfg.permissionMode, [...cfg.allowedCommands, ...readProjectAllowedCommands(findGitRoot(root) ?? root)], null);
+  const projectAllowed = args.projectConfig ? readProjectAllowedCommands(findGitRoot(root) ?? root) : [];
+  const permissions = new Permissions(cfg.permissionMode, [...cfg.allowedCommands, ...projectAllowed], null);
 
   let session: SessionFile = {
     id: newSessionId(), root, model: startModel, title: '', created: new Date().toISOString(), updated: new Date().toISOString(),
@@ -301,7 +306,7 @@ async function main(): Promise<void> {
     temperature: cfg.temperature,
     maxTurns: args.maxTurns,
     contextWindow: models.find(m => m.id === startModel)?.contextWindow,
-    systemPrompt: (): string => buildSystemPrompt({ root, mode: permissions.mode, model: agent.opts.model, nonInteractive: printMode }),
+    systemPrompt: (): string => buildSystemPrompt({ root, mode: permissions.mode, model: agent.opts.model, nonInteractive: printMode, projectConfig: args.projectConfig }),
   });
   agent.messages = session.messages;
   agent.usage = session.usage ?? { prompt: 0, completion: 0 };
@@ -313,7 +318,9 @@ async function main(): Promise<void> {
   };
 
   if (!printMode) {
-    await runRepl({ config: cfg, client, root, models, agent, permissions, session, initialPrompt: prompt || undefined, setModel });
+    await runRepl({
+      config: cfg, client, root, models, agent, permissions, session, initialPrompt: prompt || undefined, setModel, projectConfig: args.projectConfig,
+    });
     return;
   }
 

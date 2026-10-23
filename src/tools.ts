@@ -8,7 +8,7 @@ import { IgnoreMatcher, loadIgnoreMatcher } from './ignore';
 import { Permissions } from './permissions';
 import { commandPrefix } from './permissions';
 import { currentShell, shellDescription, shellKind } from './shell';
-import { assessRisk, classifyCommand, commandReach } from './shellSafety';
+import { assessRisk, classifyCommand, commandReach, realPathOfNearest } from './shellSafety';
 import { c, clip } from './ui';
 
 // ── context ──────────────────────────────────────────────────────────────────
@@ -60,24 +60,15 @@ export function resolvePath(root: string, p: unknown): string {
   return path.resolve(root, expandHome(raw));
 }
 
-function realNearest(p: string): string {
-  let cur = p;
-  for (;;) {
-    try { return fs.realpathSync(cur); } catch { /* walk up */ }
-    const parent = path.dirname(cur);
-    if (parent === cur) return cur;
-    cur = parent;
-  }
-}
-
 // Lexically and after following symlinks, so a link committed inside the repo
-// that points at ~/.ssh does not count as inside.
+// that points at ~/.ssh — or at a file there that does not exist yet — does
+// not count as inside.
 export function isInsideRoot(abs: string, root: string): boolean {
   const inside = (child: string, parent: string) => {
     const rel = path.relative(parent, child);
     return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
   };
-  return inside(abs, root) && inside(realNearest(abs), realNearest(root));
+  return inside(abs, root) && inside(realPathOfNearest(abs), realPathOfNearest(root));
 }
 
 export function displayPath(abs: string, root: string): string {
@@ -475,6 +466,19 @@ const grepFiles: Tool = {
 const DEFAULT_COMMAND_TIMEOUT = 120_000;
 const MAX_COMMAND_TIMEOUT = 600_000;
 
+// The environment a command runs with: this process's, minus the API key the
+// CLI authenticates with. A test, a postinstall script or a prompt-injected
+// `printenv` would otherwise put the key into the conversation, a CI log or a
+// PR comment. The key is whichever variable config.ts takes it from:
+// KEDTEC_API_KEY, else OPENAI_API_KEY (which a project's own code may also
+// want — set KEDTEC_API_KEY for this CLI and that one is left alone).
+export function commandEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env, KEDTEC: '1' };
+  delete out.KEDTEC_API_KEY;
+  if (!env.KEDTEC_API_KEY?.trim()) delete out.OPENAI_API_KEY;
+  return out;
+}
+
 export function runShell(command: string, cwd: string, timeoutMs: number, signal: AbortSignal): Promise<{ output: string; code: number | null; timedOut: boolean; interrupted: boolean }> {
   return new Promise(resolve => {
     const sh = currentShell();
@@ -484,7 +488,7 @@ export function runShell(command: string, cwd: string, timeoutMs: number, signal
     // stopped with taskkill /T instead.
     const detached = !windows;
     const child = spawn(sh.file, sh.args(command), {
-      cwd, env: { ...process.env, KEDTEC: '1' }, stdio: ['ignore', 'pipe', 'pipe'], detached, windowsHide: true,
+      cwd, env: commandEnv(), stdio: ['ignore', 'pipe', 'pipe'], detached, windowsHide: true,
     });
     let output = '';
     let timedOut = false, interrupted = false;

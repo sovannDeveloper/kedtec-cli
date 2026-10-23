@@ -109,7 +109,7 @@ and the CLI picks the window whose workspace contains the current directory.
 
 | Mode | File edits | Shell commands |
 | --- | --- | --- |
-| `default` | ask, with a diff | ask (plain reads such as `ls`, `grep`, `cat` inside the project run freely) |
+| `default` | ask, with a diff | ask (plain reads such as `ls`, `grep`, `cat` inside the project run freely — not with options that write or run something, such as `sed -e`, `sort -o` or `rg --pre`) |
 | `acceptEdits` | apply automatically inside the project | ask |
 | `auto` | apply automatically inside the project | run automatically, except risky ones (below), which ask |
 | `plan` | blocked: the agent investigates and proposes a plan | read-only commands only |
@@ -177,6 +177,13 @@ Exit codes: `0` success, `1` error (including `--max-turns` reached), `130` inte
 `{"type":"result","is_error":false,"result":"…","turns":4,"model":"…","session_id":"…","usage":{…}}`.
 
 See [examples/github-actions.yml](examples/github-actions.yml) for a pull-request review job.
+
+When the checkout is not yours to trust — a pull request's code — pass
+`--no-project-config`: the project's `KEDTEC.md`, `CLAUDE.md`, `AGENTS.md` and
+`.kedtec/settings.json` are then ignored rather than followed (`~/.kedtec/KEDTEC.md`
+still applies). Commands the agent runs never see the API key: `KEDTEC_API_KEY` is
+removed from their environment, and so is `OPENAI_API_KEY` when that is where the
+key came from.
 
 ## Configuration
 

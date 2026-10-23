@@ -30,10 +30,14 @@ jobs:
           KEDTEC_API_KEY: ${{ secrets.KEDTEC_API_KEY }}
           KEDTEC_ENDPOINT: ${{ secrets.KEDTEC_ENDPOINT }}
           KEDTEC_PERMISSION_MODE: plan
+        # --no-project-config: the checkout is the PR's code, so its KEDTEC.md /
+        # CLAUDE.md / AGENTS.md and .kedtec/settings.json are the PR author's
+        # words, not instructions. The API key never reaches the commands the
+        # agent runs.
         run: |
           git diff origin/${{ github.base_ref }}...HEAD \
             | kedtec -p "Review this pull request diff. List real bugs and risks with file:line references, most severe first. Say so plainly if you find none." \
-                --max-turns 40 > review.md
+                --max-turns 40 --no-project-config > review.md
 
       - name: Comment on the PR
         env:

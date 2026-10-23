@@ -30,8 +30,11 @@ export function findGitRoot(start: string): string | undefined {
 }
 
 // Global file first, then from the repository root down to cwd, so the most
-// specific instructions come last and read as the ones that win.
-export function loadInstructions(cwd: string): InstructionFile[] {
+// specific instructions come last and read as the ones that win. With
+// `project` false (--no-project-config) only the global file is read: in a
+// checkout someone else controls — CI on a pull request — the project's files
+// are the attacker's words, and they would arrive marked "follow these".
+export function loadInstructions(cwd: string, project = true): InstructionFile[] {
   const dirs: string[] = [];
   const stop = findGitRoot(cwd) ?? cwd;
   let dir = path.resolve(cwd);
@@ -42,6 +45,7 @@ export function loadInstructions(cwd: string): InstructionFile[] {
     if (parent === dir) break;
     dir = parent;
   }
+  if (!project) dirs.length = 0;
   const candidates = [path.join(HOME_DIR, 'KEDTEC.md')];
   for (const d of dirs) for (const name of INSTRUCTION_FILES) candidates.push(path.join(d, name));
 
@@ -133,7 +137,7 @@ const MODE_TEXT: Record<PermissionMode, string> = {
   plan: 'Mode: PLAN (read-only). write_file and edit_file are blocked and run_command only runs commands that provably read inside the project. Investigate, then deliver a concrete plan: what you found (with file:line references) and each file you would create or change and how. Do not paste whole files. End by telling the user to switch modes (/mode) so you can apply it.',
 };
 
-export function buildSystemPrompt(opts: { root: string; mode: PermissionMode; model: string; nonInteractive: boolean }): string {
+export function buildSystemPrompt(opts: { root: string; mode: PermissionMode; model: string; nonInteractive: boolean; projectConfig: boolean }): string {
   const parts = [BASE_PROMPT];
   const branch = gitBranch(opts.root);
   parts.push([
@@ -149,7 +153,7 @@ export function buildSystemPrompt(opts: { root: string; mode: PermissionMode; mo
   ].join('\n'));
   parts.push(`# ${MODE_TEXT[opts.mode]}`);
 
-  const files = loadInstructions(opts.root);
+  const files = loadInstructions(opts.root, opts.projectConfig);
   if (files.length > 0) {
     const blocks = files.map(f => {
       const note = !f.truncated ? ''

@@ -65,8 +65,11 @@ function findGitRoot(start) {
     }
 }
 // Global file first, then from the repository root down to cwd, so the most
-// specific instructions come last and read as the ones that win.
-function loadInstructions(cwd) {
+// specific instructions come last and read as the ones that win. With
+// `project` false (--no-project-config) only the global file is read: in a
+// checkout someone else controls — CI on a pull request — the project's files
+// are the attacker's words, and they would arrive marked "follow these".
+function loadInstructions(cwd, project = true) {
     const dirs = [];
     const stop = findGitRoot(cwd) ?? cwd;
     let dir = path.resolve(cwd);
@@ -79,6 +82,8 @@ function loadInstructions(cwd) {
             break;
         dir = parent;
     }
+    if (!project)
+        dirs.length = 0;
     const candidates = [path.join(config_1.HOME_DIR, 'KEDTEC.md')];
     for (const d of dirs)
         for (const name of exports.INSTRUCTION_FILES)
@@ -188,7 +193,7 @@ function buildSystemPrompt(opts) {
             : '- Running interactively in a terminal.',
     ].join('\n'));
     parts.push(`# ${MODE_TEXT[opts.mode]}`);
-    const files = loadInstructions(opts.root);
+    const files = loadInstructions(opts.root, opts.projectConfig);
     if (files.length > 0) {
         const blocks = files.map(f => {
             const note = !f.truncated ? ''
