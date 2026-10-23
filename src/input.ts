@@ -5,6 +5,7 @@ import { PassThrough } from 'stream';
 import { StringDecoder } from 'string_decoder';
 import { HOME_DIR } from './config';
 import { ImageAttachment } from './images';
+import type { PastedText } from './pastes';
 import type { Question, QuestionAnswers } from './tools';
 import { c, clip, columns, stripAnsi } from './ui';
 
@@ -65,7 +66,8 @@ export function expectReport(): void {
 
 // `images` are the ones pasted into the line (screen.ts), by the number in
 // their "[Image #n]" placeholder; only those whose placeholder is still there.
-export type AskResult = { kind: 'line'; text: string; images?: Map<number, ImageAttachment> } | { kind: 'interrupt' } | { kind: 'eof' };
+// `pastes` the same for long pasted text and "[Pasted text #n +L lines]".
+export type AskResult = { kind: 'line'; text: string; images?: Map<number, ImageAttachment>; pastes?: Map<number, PastedText> } | { kind: 'interrupt' } | { kind: 'eof' };
 
 const HISTORY_FILE = path.join(HOME_DIR, 'history');
 export const HISTORY_SIZE = 500;

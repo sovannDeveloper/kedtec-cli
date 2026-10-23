@@ -591,3 +591,22 @@ test('sources: short paths, one row per document', () => {
     '[5] mobile/ocsolution-ocs_auth/docs/10-reference.md · Backend endpoints',
   ]);
 });
+
+test('pastes: long text is saved to a temp file and goes back in place of its placeholder', () => {
+  const { isLongPaste, isPasteFile, pasteTag, savePaste, withPastes } = require('../dist/pastes');
+  assert.strictEqual(isLongPaste('short'), false);
+  assert.strictEqual(isLongPaste('x'.repeat(1001)), true);
+  assert.strictEqual(isLongPaste('a\n'.repeat(11)), true);
+  const small = savePaste('line one\nline two');
+  assert.strictEqual(fs.readFileSync(small.path, 'utf8'), 'line one\nline two');
+  assert.ok(isPasteFile(small.path));
+  assert.ok(!isPasteFile(path.join(path.dirname(small.path), '..', 'etc')));
+  assert.strictEqual(pasteTag(1, small), '[Pasted text #1 +2 lines]');
+  const big = savePaste('y'.repeat(70_000));
+  const out = withPastes(`see ${pasteTag(1, small)} and ${pasteTag(2, big)}, [Pasted text #3 +1 line]`, new Map([[1, small], [2, big]]));
+  assert.ok(out.startsWith('see line one\nline two and [Pasted text #2: 1 lines, 70,000 characters'));
+  assert.ok(out.includes(big.path));
+  assert.ok(out.endsWith(', [Pasted text #3 +1 line]'));
+  assert.strictEqual(withPastes('plain', undefined), 'plain');
+  fs.rmSync(path.dirname(small.path), { recursive: true, force: true });
+});

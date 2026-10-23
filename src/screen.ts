@@ -1,5 +1,6 @@
 import * as readline from 'readline';
 import { ImageAttachment, clipboardImage, imageFromFile, pastedImagePaths } from './images';
+import { PastedText, isLongPaste, pasteTag, savePaste } from './pastes';
 import { AskResult, HISTORY_SIZE, Prompter, expectReport, installInputFilter, keyStream, loadHistory, saveHistory } from './input';
 import { c, stripAnsi } from './ui';
 
@@ -243,6 +244,8 @@ export class Screen implements Prompter {
   private hint = '';
   // Images pasted into the current input; "[Image #n]" is images[n - 1].
   private images: ImageAttachment[] = [];
+  // Long text pasted into the current input; "[Pasted text #n …]" is pastes[n - 1].
+  private pastes: PastedText[] = [];
 
   // Rows scrolled up from the bottom of the conversation; 0 follows new output.
   private scroll = 0;
@@ -607,6 +610,7 @@ export class Screen implements Prompter {
       this.placeholder = opts.placeholder ?? '';
       this.editing = true;
       this.images = [];
+      this.pastes = [];
       this.hint = '';
       let histIdx = -1;
       let draft = '';
@@ -623,7 +627,13 @@ export class Screen implements Prompter {
           this.images.forEach((img, i) => { if (result.kind === 'line' && result.text.includes(imageTag(i + 1))) images.set(i + 1, img); });
           if (images.size) result = { ...result, images };
         }
+        if (result.kind === 'line' && this.pastes.length) {
+          const pastes = new Map<number, PastedText>();
+          this.pastes.forEach((p, i) => { if (result.kind === 'line' && result.text.includes(pasteTag(i + 1, p))) pastes.set(i + 1, p); });
+          if (pastes.size) result = { ...result, pastes };
+        }
         this.images = [];
+        this.pastes = [];
         this.hint = '';
         this.shell = false;
         this.closeSuggestions();
@@ -693,7 +703,8 @@ export class Screen implements Prompter {
         });
       };
       // A paste that is only the paths of image files (a file dragged onto the
-      // terminal) attaches those images instead of the paths. An empty paste is
+      // terminal) attaches those images instead of the paths, and long text
+      // becomes a "[Pasted text #n]" placeholder (pastes.ts). An empty paste is
       // cmd+v (or VS Code's ctrl+v) with an image on the clipboard: the
       // terminal had no text to send, so the image is read from the clipboard.
       const pasteEnded = async () => {
@@ -704,7 +715,18 @@ export class Screen implements Prompter {
           return;
         }
         const paths = pastedImagePaths(pasted);
-        if (!paths) return;
+        if (!paths) {
+          // Long text: saved to a temp file, and a placeholder in its place.
+          if (this.secret || !isLongPaste(pasted)) return;
+          const saved = savePaste(pasted);
+          if (typeof saved === 'string') { this.hint = `Cannot save the pasted text, kept in the box: ${saved}`; return; }
+          this.pastes.push(saved);
+          const before = this.text.slice(0, start);
+          const tag = `${before && !/\s$/.test(before) ? ' ' : ''}${pasteTag(this.pastes.length, saved)}`;
+          this.text = before + tag + this.text.slice(end);
+          this.cursor = start + tag.length;
+          return;
+        }
         const loaded = await Promise.all(paths.map(p => imageFromFile(p)));
         const failed = loaded.findIndex(img => typeof img === 'string');
         // Edited meanwhile: the paths stay as typed.

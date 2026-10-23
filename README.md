@@ -72,6 +72,7 @@ Print mode (`-p`, CI) never asks.
 | `@src/app.ts#L10-20` · `@src/app.ts:10-20` · `@src/app.ts #10-20` | attach just those lines (works with any editor, or none) |
 | `ctrl+v` or `cmd+v` (or `alt+v`) | paste an image from the clipboard (a screenshot, or an image file copied in Finder); it shows as `[Image #1]` in the box. Dragging an image file onto the terminal does the same |
 | `@screenshot.png` | attach an image file (PNG, JPEG, GIF, WebP) |
+| paste long text | over 1,000 characters or 10 lines is saved to a temp file and shows as `[Pasted text #1 +40 lines]` in the box; it is sent in full (past 60,000 characters the model reads it from the file) |
 
 Images go to the model as `image_url` parts, so the model has to accept images.
 An image over 5 MB is scaled down on macOS (with `sips`) and refused elsewhere.

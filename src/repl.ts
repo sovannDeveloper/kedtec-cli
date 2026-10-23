@@ -8,6 +8,7 @@ import {
   removeCustomModel, resolveKey, saveCustomModel, writeStoredConfig,
 } from './config';
 import { ImageAttachment, dataUrl, imageFromFile, isImagePath } from './images';
+import { PastedText, withPastes } from './pastes';
 import { LineInput, PanelTab, Prompter, TurnKeys, questionForm, select, tabbedPanel } from './input';
 import { Asker, PermissionRequest, Permissions } from './permissions';
 import { loadInstructions } from './prompt';
@@ -388,8 +389,11 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     saveSession(session);
   };
 
-  const send = async (text: string, pasted?: Map<number, ImageAttachment>): Promise<void> => {
-    const { text: mentioned, attached, skipped, images } = expandMentions(text, root, agent.readState);
+  const send = async (text: string, pasted?: Map<number, ImageAttachment>, pastes?: Map<number, PastedText>): Promise<void> => {
+    // @mentions are looked for in what was typed, not in pasted text.
+    const typed = expandMentions(text, root, agent.readState);
+    const { attached, skipped, images } = typed;
+    const mentioned = withPastes(typed.text, pastes);
     const fromIde = ideContext.forMessage(ide.state);
     const expanded = fromIde ? `${mentioned}\n\n${fromIde.text}` : mentioned;
     const mentionedImages: ImageAttachment[] = [];
@@ -654,7 +658,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       persist();
       continue;
     }
-    await send(text.startsWith('//') ? text.slice(1) : text, answer.images);
+    await send(text.startsWith('//') ? text.slice(1) : text, answer.images, answer.pastes);
   }
   persist();
   ide.stop();

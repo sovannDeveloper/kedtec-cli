@@ -5,6 +5,7 @@ import * as path from 'path';
 import { ToolSchema } from './client';
 import { additionsOnly, unifiedDiff } from './diff';
 import { IgnoreMatcher, loadIgnoreMatcher } from './ignore';
+import { isPasteFile } from './pastes';
 import { Permissions } from './permissions';
 import { commandPrefix } from './permissions';
 import { currentShell, shellDescription, shellKind } from './shell';
@@ -94,8 +95,9 @@ export function displayPath(abs: string, root: string): string {
   return !rel ? '.' : rel.startsWith('..') || path.isAbsolute(rel) ? abs : rel;
 }
 
+// A long paste's temp file (pastes.ts) is the user's own message, read freely.
 async function checkOutsideRead(abs: string, ctx: ToolContext, what: string): Promise<ToolOutcome | null> {
-  if (isInsideRoot(abs, ctx.root)) return null;
+  if (isInsideRoot(abs, ctx.root) || (what === 'Read' && isPasteFile(abs))) return null;
   const verdict = await ctx.permissions.check({ kind: 'outside', title: `${what} ${abs} (outside the project)`, outsideRoot: true });
   return verdict.ok ? null : fail(verdict.message);
 }
