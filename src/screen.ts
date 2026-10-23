@@ -479,11 +479,19 @@ export class Screen implements Prompter {
     return Math.max(1, Math.min(12, Math.floor(this.rows / 2) - 4));
   }
 
-  // One row, never wider than the screen.
+  // One row, never wider than the screen. Measured in columns, not string
+  // length: Khmer's combining marks take none, CJK takes two.
   private fit(line: string, width = this.cols - 1): string {
     if (!line) return '';
     const plain = stripAnsi(line);
-    return plain.length <= width ? line : plain.slice(0, Math.max(0, width - 1)) + '…';
+    let w = 0, cutAt = -1;
+    for (const { segment, index } of segmenter.segment(plain)) {
+      const gw = graphemeWidth(segment);
+      if (cutAt < 0 && w + gw > width - 1) cutAt = index; // where "…" goes if it overflows
+      if (w + gw > width) return plain.slice(0, cutAt) + '…';
+      w += gw;
+    }
+    return line;
   }
 
   // The fixed rows at the bottom, where the cursor goes among them, and which

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import { PassThrough } from 'stream';
+import { StringDecoder } from 'string_decoder';
 import { HOME_DIR } from './config';
 import { ImageAttachment } from './images';
 import type { Question, QuestionAnswers } from './tools';
@@ -28,8 +29,11 @@ export function installInputFilter(onWheel: (direction: -1 | 1) => void): void {
   const out = new PassThrough();
   filtered = out;
   let pending = '';
+  // A long paste comes in over several reads, and a character can be split
+  // between two of them; the decoder holds its first bytes until the rest come.
+  const decoder = new StringDecoder('utf8');
   process.stdin.on('data', (d: Buffer) => {
-    let s = pending + d.toString('utf8');
+    let s = pending + decoder.write(d);
     pending = '';
     // A report split across two reads: hold its head until the rest arrives.
     // Only a report's own prefix is held — never a lone Esc, which is a key.
