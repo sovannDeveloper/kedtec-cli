@@ -5,11 +5,10 @@
     "target": "ES2022",
     "lib": ["ES2022"],
     "types": ["node"],
-    "outDir": "dist",
     "rootDir": "src",
     "strict": true,
-    "sourceMap": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "noEmit": true
   },
   "include": ["src"]
 }

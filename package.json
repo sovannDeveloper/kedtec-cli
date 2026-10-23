@@ -14,10 +14,12 @@
     "node": ">=18.17"
   },
   "scripts": {
-    "compile": "tsc -p .",
-    "watch": "tsc -w -p .",
+    "typecheck": "tsc -p .",
+    "emit": "esbuild \"src/*.ts\" --outdir=dist --platform=node --format=cjs --target=node18 --minify --log-level=warning",
+    "compile": "npm run typecheck && npm run emit",
+    "watch": "npm run emit -- --watch",
     "start": "node dist/cli.js",
-    "test": "tsc -p . && node --test test/*.test.js",
+    "test": "npm run compile && node --test test/*.test.js",
     "bridge": "npm --prefix ide-bridge install && npm --prefix ide-bridge run package"
   },
   "dependencies": {
@@ -25,6 +27,7 @@
   },
   "devDependencies": {
     "@types/node": "20.19.43",
+    "esbuild": "0.28.2",
     "typescript": "5.9.3"
   }
 }

@@ -201,10 +201,16 @@ The config file is written with mode `600`.
 ## Development
 
 ```bash
-npm run watch     # recompile on change
-npm test          # build + unit tests (node:test)
+npm run watch     # rebuild dist/ on change (no type check)
+npm run typecheck # tsc, no output
+npm test          # type check + build + unit tests (node:test)
 node dist/cli.js  # run without linking
 ```
+
+`npm run compile` type-checks with `tsc` and then has esbuild write `dist/`:
+one minified CommonJS file per source file, without source maps. Errors and
+stack traces from `dist/` therefore point into minified code; to debug, read
+the matching file in `src/`.
 
 ### Releasing
 
@@ -212,7 +218,7 @@ The version lives only in `package.json`; `kedtec --version` reads it at run
 time, so there is no constant in `src/` to keep in step.
 
 ```bash
-npm run compile && npm test       # dist/ must match src/ — it is what users install
+npm test                          # compiles too: dist/ must match src/ — it is what users install
 git add -A && git commit -m "…"   # npm version needs a clean working tree
 npm version patch                 # or minor / major: bumps, commits and tags vX.Y.Z
 git push --follow-tags
