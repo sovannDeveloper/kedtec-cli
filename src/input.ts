@@ -4,7 +4,8 @@ import * as readline from 'readline';
 import { PassThrough } from 'stream';
 import { HOME_DIR } from './config';
 import { ImageAttachment } from './images';
-import { c, columns } from './ui';
+import type { Question, QuestionAnswers } from './tools';
+import { c, clip, columns, stripAnsi } from './ui';
 
 // Terminal input. A readline interface exists only while a question is being
 // asked and is closed between them, so that while a turn runs the terminal is
@@ -222,6 +223,161 @@ export function select(
     keys.on('keypress', onKey);
     if (title) process.stdout.write(`${title}\n`);
     render(true);
+  });
+}
+
+// The model's questions (ask_user) as one form, drawn in place and erased when
+// it closes. Several questions get a tab each, and a Submit tab that reviews
+// the answers:
+//
+//   ─────────────────────────────
+//   ← ☐ Focus  ☐ Task type  ✔ Submit →
+//
+//   What do you want to work on today?
+//
+//   ❯ 1. KEDTec CLI
+//        The terminal agent in this folder
+//     2. Type something.
+//   ─────────────────────────────
+//     3. Chat about this
+//
+//   Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+//
+// An option is picked with Enter or its number, and the form moves on to the
+// next question; a single question is answered at once. On "Type something."
+// typing writes an answer of one's own. "Chat about this" ends the form so the
+// person can talk it over instead.
+export function questionForm(questions: Question[]): Promise<QuestionAnswers> {
+  return new Promise(resolve => {
+    const stdin = process.stdin;
+    const keys = keyStream();
+    readline.emitKeypressEvents(keys);
+    const wasRaw = !!stdin.isRaw;
+    if (stdin.isTTY) stdin.setRawMode(true);
+    stdin.resume();
+
+    const multi = questions.length > 1;
+    const submitTab = questions.length; // only when multi
+    const answers: (string | undefined)[] = questions.map(() => undefined);
+    const typed: string[] = questions.map(() => '');
+    // The highlighted row of each tab; the Submit tab's is answers.length's.
+    const rowOf: number[] = [...questions.map(() => 0), 0];
+    let tab = 0;
+    let drawn = 0;
+
+    // Rows of a question: its options, "Type something.", "Chat about this".
+    const typeRow = (q: number) => questions[q].options.length;
+    const chatRow = (q: number) => questions[q].options.length + 1;
+    const rowCount = (t: number) => (t === submitTab && multi ? 2 : questions[t].options.length + 2);
+
+    const fitLine = (line: string, width: number) => {
+      const plain = stripAnsi(line);
+      return plain.length <= width ? line : `${plain.slice(0, Math.max(0, width - 1))}…`;
+    };
+    const tabBar = (width: number): string => {
+      const label = (t: number) => (t === submitTab
+        ? '✔ Submit'
+        : `${answers[t] !== undefined ? '☒' : '☐'} ${questions[t].header ? clip(questions[t].header!, 12) : `Q${t + 1}`}`);
+      const tabs = [...questions.keys(), submitTab];
+      const plainWidth = 4 + tabs.reduce((n, t) => n + label(t).length + 3, 0);
+      const name = (t: number) => (plainWidth > width && t !== submitTab ? `${answers[t] !== undefined ? '☒' : '☐'} ${t + 1}` : label(t));
+      const body = tabs.map(t => (t === tab ? c.inverse(c.accent(` ${name(t)} `)) : ` ${t !== submitTab && answers[t] !== undefined ? c.green(name(t)) : name(t)} `)).join(' ');
+      return `${c.gray('←')} ${body} ${c.gray('→')}`;
+    };
+    const row = (on: boolean, n: number, text: string) => `${on ? c.accent('❯') : ' '} ${on ? c.accent(`${n}.`) : c.gray(`${n}.`)} ${text}`;
+
+    const lines = (width: number): string[] => {
+      const out = [c.gray('─'.repeat(width))];
+      if (multi) out.push(tabBar(width));
+      out.push('');
+      if (multi && tab === submitTab) {
+        out.push(c.bold('Review your answers'), '');
+        questions.forEach((q, i) => {
+          out.push(` ${c.gray('●')} ${q.question}`);
+          out.push(`   ${c.gray('→')} ${answers[i] !== undefined ? c.accent(answers[i]!) : c.yellow('not answered')}`);
+        });
+        if (answers.some(a => a === undefined)) out.push('', c.yellow('⚠ You have not answered all questions'));
+        out.push('', 'Ready to submit your answers?', '');
+        out.push(row(rowOf[tab] === 0, 1, rowOf[tab] === 0 ? c.accent('Submit answers') : 'Submit answers'));
+        out.push(row(rowOf[tab] === 1, 2, rowOf[tab] === 1 ? c.accent('Cancel') : 'Cancel'));
+      } else {
+        const q = questions[tab];
+        const at = rowOf[tab];
+        out.push(c.bold(q.question), '');
+        q.options.forEach((o, i) => {
+          const chosen = answers[tab] === o.label ? ` ${c.green('✔')}` : '';
+          out.push(row(at === i, i + 1, `${at === i ? c.accent(o.label) : o.label}${chosen}`));
+          if (o.description) out.push(`     ${c.gray(o.description)}`);
+        });
+        const own = typed[tab];
+        const cursor = at === typeRow(tab) ? c.inverse(' ') : '';
+        const ownChosen = own && answers[tab] === own ? ` ${c.green('✔')}` : '';
+        out.push(row(at === typeRow(tab), typeRow(tab) + 1, own ? `${own}${cursor}${ownChosen}` : `${cursor}${c.gray('Type something.')}`));
+        out.push(c.gray('─'.repeat(width)));
+        out.push(row(at === chatRow(tab), chatRow(tab) + 1, at === chatRow(tab) ? c.accent('Chat about this') : 'Chat about this'));
+      }
+      out.push('', c.gray(`Enter to select · ${multi ? 'Tab/Arrow keys' : 'Arrow keys'} to navigate · Esc to cancel`));
+      return out.map(l => fitLine(l, width));
+    };
+
+    const erase = () => { if (drawn) process.stdout.write(`\x1b[${drawn}A\r\x1b[J`); drawn = 0; };
+    const render = () => {
+      const out = lines(columns() - 1);
+      erase();
+      process.stdout.write(out.map(l => `${l}\n`).join(''));
+      drawn = out.length;
+    };
+    const done = (result: QuestionAnswers) => {
+      keys.off('keypress', onKey);
+      erase();
+      if (stdin.isTTY) stdin.setRawMode(wasRaw);
+      stdin.pause();
+      resolve(result);
+    };
+    const switchTab = (delta: number) => {
+      if (!multi) return;
+      tab = (tab + delta + questions.length + 1) % (questions.length + 1);
+    };
+    // After an answer: the next question still open, else the Submit tab.
+    const answer = (value: string) => {
+      answers[tab] = value;
+      if (!multi) return done({ kind: 'answered', answers: [...answers] });
+      const next = questions.findIndex((_, i) => i > tab && answers[i] === undefined);
+      const earlier = answers.findIndex(a => a === undefined);
+      tab = next >= 0 ? next : earlier >= 0 ? earlier : submitTab;
+      rowOf[submitTab] = 0;
+      render();
+    };
+    const choose = (r: number) => {
+      if (multi && tab === submitTab) return r === 0 ? done({ kind: 'answered', answers: [...answers] }) : done({ kind: 'dismissed' });
+      if (r === chatRow(tab)) return done({ kind: 'chat' });
+      if (r === typeRow(tab)) return typed[tab].trim() ? answer(typed[tab].trim()) : render();
+      answer(questions[tab].options[r].label);
+    };
+
+    const onKey = (str: string | undefined, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean } | undefined) => {
+      const name = key?.name;
+      if (name === 'escape' || (key?.ctrl && name === 'c')) return done({ kind: 'dismissed' });
+      const typing = !(multi && tab === submitTab) && rowOf[tab] === typeRow(tab);
+      const n = rowCount(tab);
+      if (name === 'return' || name === 'enter') return choose(rowOf[tab]);
+      if (name === 'up') rowOf[tab] = (rowOf[tab] - 1 + n) % n;
+      else if (name === 'down') rowOf[tab] = (rowOf[tab] + 1) % n;
+      else if (name === 'left' || (name === 'tab' && key?.shift)) switchTab(-1);
+      else if (name === 'right' || name === 'tab') switchTab(1);
+      else if (typing && name === 'backspace') typed[tab] = [...typed[tab]].slice(0, -1).join('');
+      else if (typing && key?.ctrl && name === 'u') typed[tab] = '';
+      else if (typing && str && !key?.ctrl && !key?.meta && str >= ' ') typed[tab] += str;
+      else if (str && /^[1-9]$/.test(str) && Number(str) <= n) {
+        rowOf[tab] = Number(str) - 1;
+        // A number picks its row, except "Type something.", which it only moves to.
+        if (multi && tab === submitTab) return choose(rowOf[tab]);
+        if (rowOf[tab] !== typeRow(tab)) return choose(rowOf[tab]);
+      } else return;
+      render();
+    };
+    keys.on('keypress', onKey);
+    render();
   });
 }
 

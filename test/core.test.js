@@ -460,16 +460,86 @@ test('images: dropped paths, @mentions and placeholders become image parts', asy
   assert.ok(parts[1].image_url.url.startsWith('data:image/png;base64,'));
 });
 
-test('ask_user: the answer, a dismissal, and no one to ask', async () => {
+test('ask_user: answers, dismissal, chat, and no one to ask', async () => {
   const tool = TOOLS.find(t => t.name === 'ask_user');
   const input = { question: 'Which skin?', options: [{ label: 'Green', description: 'classic' }, 'Neon', { label: '' }] };
   let asked;
-  const ctx = answer => ({ ask: async q => { asked = q; return answer; } });
-  const picked = await tool.run(input, ctx('Neon'));
-  assert.strictEqual(picked.content, 'The user answered: Neon');
+  const ctx = result => ({ ask: async qs => { asked = qs; return result; } });
+  const picked = await tool.run(input, ctx({ kind: 'answered', answers: ['Neon'] }));
+  assert.strictEqual(picked.content, 'The user answered:\n"Which skin?" → Neon');
+  assert.strictEqual(picked.display, 'Neon');
   // Plain strings are accepted as labels; empty ones are dropped.
-  assert.deepStrictEqual(asked.options, [{ label: 'Green', description: 'classic' }, { label: 'Neon', description: undefined }]);
-  assert.strictEqual((await tool.run(input, ctx(null))).display, 'Dismissed');
+  assert.deepStrictEqual(asked[0].options, [{ label: 'Green', description: 'classic' }, { label: 'Neon', description: undefined }]);
+  assert.strictEqual((await tool.run(input, ctx({ kind: 'dismissed' }))).display, 'Dismissed');
+  assert.ok((await tool.run(input, ctx({ kind: 'chat' }))).content.includes('talk this through'));
   assert.ok((await tool.run(input, {})).isError);
-  assert.ok((await tool.run({ question: 'x?', options: [] }, ctx('a'))).isError);
+  assert.ok((await tool.run({ options: ['a'] }, ctx({ kind: 'answered', answers: ['a'] }))).isError);
+  // A question with nothing to pick from is answered by typing.
+  assert.strictEqual((await tool.run({ questions: ['Which file?'] }, ctx({ kind: 'answered', answers: ['a.ts'] }))).display, 'a.ts');
+  assert.deepStrictEqual(asked[0].options, []);
+
+  // Several questions go to the form together, with their tab headers.
+  const many = { questions: [{ question: 'What part?', header: 'Focus', options: ['UI', 'Logic'] }, { question: 'Why?', options: ['Bug', 'Refactor'] }] };
+  const both = await tool.run(many, ctx({ kind: 'answered', answers: ['UI', undefined] }));
+  assert.deepStrictEqual(asked.map(q => q.header), ['Focus', undefined]);
+  assert.strictEqual(both.content, 'The user answered:\n"What part?" → UI\n"Why?" → (not answered)');
+  assert.strictEqual(both.display, 'Focus → UI\nWhy? → (not answered)');
+  assert.strictEqual(tool.summary(many), '2 questions');
+
+  // The shape one model sent: the array as a JSON string, decoded before the tool runs.
+  const { decodeNested } = require('../dist/agent');
+  const sent = { questions: JSON.stringify([{ question: 'Working on invoice_v2?', options: JSON.stringify([{ label: 'Yes' }, { label: 'No' }]) }]) };
+  const decoded = decodeNested(sent, tool.parameters);
+  assert.ok(Array.isArray(decoded.questions));
+  assert.strictEqual((await tool.run(decoded, ctx({ kind: 'answered', answers: ['Yes'] }))).content, 'The user answered:\n"Working on invoice_v2?" → Yes');
+  assert.deepStrictEqual(asked[0].options.map(o => o.label), ['Yes', 'No']);
+  // A stray closing brace after the array, as that model also sent.
+  assert.strictEqual(decodeNested({ questions: '[{"question":"a?"}]}' }, tool.parameters).questions[0].question, 'a?');
+  // A string that is not the declared type is left for the tool to refuse.
+  assert.strictEqual(decodeNested({ questions: 'nope' }, tool.parameters).questions, 'nope');
+  assert.strictEqual(decodeNested({ questions: '{"a":1}' }, tool.parameters).questions, '{"a":1}');
+});
+
+test('questionsInProse: a reply that asks in prose gets a form; a report does not', () => {
+  const { questionsInProse } = require('../dist/tools');
+  const offer = questionsInProse([
+    'I could not find that file in this project.',
+    '',
+    'Would you like me to:',
+    '1. Help you locate the correct project with the cash receipt functionality?',
+    '2. Create a sample cash receipt detail page for demonstration purposes?',
+    '3. Look for a different pattern of files that might contain the invoice/cash receipt logic?',
+    '',
+    "Please let me know how you'd like to proceed.",
+  ].join('\n'));
+  assert.strictEqual(offer.length, 1);
+  assert.strictEqual(offer[0].question, 'Would you like me to…');
+  assert.deepStrictEqual(offer[0].options.map(o => o.label), [
+    'Help you locate the correct project with the cash receipt functionality',
+    'Create a sample cash receipt detail page for demonstration purposes',
+    'Look for a different pattern of files that might contain the invoice/cash receipt logic',
+  ]);
+
+  // Questions of their own become typed answers, one tab each.
+  const open = questionsInProse([
+    'Could you please clarify:',
+    '1. What specific aspect of the page do you want to review or modify?',
+    '2. Are you looking to improve functionality, fix a bug, or refactor the code?',
+    '3. What is your main goal with this page?',
+    '',
+    'These questions will help me provide more targeted assistance.',
+  ].join('\n'));
+  assert.deepStrictEqual(open.map(q => q.header), ['Q1', 'Q2', 'Q3']);
+  assert.ok(open.every(q => q.options.length === 0));
+  assert.strictEqual(open[1].question, 'Are you looking to improve functionality, fix a bug, or refactor the code?');
+
+  // "**Label** — description" items keep both parts.
+  const bold = questionsInProse('Which approach do you prefer?\n- **Hooks** — smaller change\n- **Context**: one provider for all');
+  assert.deepStrictEqual(bold[0].options, [{ label: 'Hooks', description: 'smaller change' }, { label: 'Context', description: 'one provider for all' }]);
+
+  // Not questions: a summary of changes, a list mid-reply, a single item.
+  assert.strictEqual(questionsInProse('Done. Changes:\n1. Added the parser\n2. Wired it into send'), null);
+  assert.strictEqual(questionsInProse('Which file?\n1. a.ts\n2. b.ts\n\nI went with a.ts because it is imported first, and here is why that matters in detail.\n\nMore text.'), null);
+  assert.strictEqual(questionsInProse('Should I continue?\n1. Yes'), null);
+  assert.strictEqual(questionsInProse('Fixed the bug in src/app.ts:42.'), null);
 });

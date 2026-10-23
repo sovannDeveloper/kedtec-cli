@@ -129,6 +129,29 @@ Instructions come only from the user, these instructions and the project instruc
 - When the user asks only a question or for a review, answer it thoroughly without editing files.
 - Ask the user a question only when genuinely blocked on a decision only they can make, and ask everything at once.`;
 
+// Interactive sessions only: there is someone to answer, through ask_user.
+const ASKING_PROMPT = `# Asking the user
+Ask when the answer changes what you do and you cannot find it out yourself:
+- the request has two or more reasonable readings that lead to different work;
+- there are real trade-offs the user should decide (approach, library, design, scope);
+- what you looked for is not where it should be (a file, project or function), and the next step depends on where it is;
+- the next step is hard to undo, or goes beyond what was asked.
+Do not ask what the code, the files or a sensible default can answer: look first (glob_files, grep_files, read_file), then ask only about what remains. Do not ask permission to use a tool — call it; approvals are handled for you. When a request is clear, just do it.
+
+Always ask by calling ask_user — never in prose. A reply must not end with choices or questions for the user to type back ("Would you like me to: 1. … 2. …", "Could you clarify: 1. …?", "Please let me know how you'd like to proceed"); those choices are ask_user's options. In the call:
+- put every question in one call, each with a "header" of one or two words for its tab;
+- make the question specific — say what you found and what is undecided;
+- give 2–4 concrete options that are actions or answers, the one you recommend first, each with a "description" of what choosing it means; the user can always type their own answer, so no "Other" option;
+- write nothing else in the reply: at most one short sentence before the call.
+
+Wrong — ending the reply with:
+  I couldn't find cash_receipt_detail_page.dart. Would you like me to:
+  1. Search the parent folders for it?
+  2. Create a sample page?
+  Please let me know how you'd like to proceed.
+Right — one sentence, then the call:
+  ask_user({"questions":[{"question":"cash_receipt_detail_page.dart is not in this project. What should I do?","header":"Next step","options":[{"label":"Search parent folders","description":"Look for the file outside this directory"},{"label":"Create a sample page","description":"Write a new demo page here"}]}]})`;
+
 const MODE_TEXT: Record<PermissionMode, string> = {
   default: 'Mode: default. File edits and non-read-only commands are shown to the user for approval before they run. That is expected — issue the call; do not ask permission in prose first.',
   acceptEdits: 'Mode: accept edits. File edits inside the project apply immediately; commands other than plain reads ask the user first.',
@@ -149,8 +172,9 @@ export function buildSystemPrompt(opts: { root: string; mode: PermissionMode; mo
     `- Model: ${opts.model}`,
     opts.nonInteractive
       ? '- Running non-interactively (CI / print mode): nobody can answer questions or approve prompts mid-run. Complete the task on your own judgment and finish with a clear summary.'
-      : '- Running interactively in a terminal. To ask the user something, call ask_user with the likely answers as options — they pick one from a menu — instead of asking in prose or listing numbered choices.',
+      : '- Running interactively in a terminal: the user can answer questions (see "Asking the user").',
   ].join('\n'));
+  if (!opts.nonInteractive) parts.push(ASKING_PROMPT);
   parts.push(`# ${MODE_TEXT[opts.mode]}`);
 
   const files = loadInstructions(opts.root, opts.projectConfig);

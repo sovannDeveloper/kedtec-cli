@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { ChatMessage, ContentPart, KbSource, ResearchPage, StoppedError, completeOnce, contentText, describeError, streamTurn } from './client';
 import { Permissions } from './permissions';
-import { Question, TOOLS, Todo, ToolOutcome, findTool, toolSchemas } from './tools';
+import { Question, QuestionAnswers, TOOLS, Todo, ToolOutcome, findTool, toolSchemas } from './tools';
 
 // What the loop reports as it goes. The interactive REPL and print mode render
 // these differently; the loop itself never writes to the terminal.
@@ -36,7 +36,7 @@ export interface AgentOptions {
   systemPrompt: () => string;
   contextWindow?: number;
   // How ask_user reaches the person; without it the tool is not offered.
-  ask?: (q: Question) => Promise<string | null>;
+  ask?: (questions: Question[]) => Promise<QuestionAnswers>;
 }
 
 // How many times a reply cut off by max_tokens is asked to carry on before the
@@ -146,7 +146,7 @@ export class Agent {
     let input: Record<string, unknown>;
     try {
       const parsed = JSON.parse(call.args || '{}');
-      input = parsed && typeof parsed === 'object' ? parsed : {};
+      input = decodeNested(parsed && typeof parsed === 'object' ? parsed : {}, tool.parameters);
     } catch (err) {
       const truncated = finishReason === 'length';
       const outcome = {
@@ -221,6 +221,32 @@ export class Agent {
     this.todos.splice(0);
     this.lastPromptTokens = 0;
   }
+}
+
+// Some models send an array or object argument as a JSON string of it
+// ("questions": "[{…}]"), often with a stray closing brace or two at the end
+// ("[{…}]}"). Where the schema says array or object and a string came, the
+// string is decoded; one that does not decode to that is left as it was, for
+// the tool to refuse.
+export function decodeNested(input: Record<string, unknown>, schema: Record<string, unknown>): Record<string, unknown> {
+  const props = (schema.properties ?? {}) as Record<string, { type?: string }>;
+  const out = { ...input };
+  for (const [key, value] of Object.entries(out)) {
+    const want = props[key]?.type;
+    if (typeof value !== 'string' || (want !== 'array' && want !== 'object')) continue;
+    let text = value.trim();
+    for (let extra = 0; extra <= 3; extra++) {
+      try {
+        const decoded = JSON.parse(text);
+        if (want === 'array' ? Array.isArray(decoded) : decoded && typeof decoded === 'object' && !Array.isArray(decoded)) out[key] = decoded;
+        break;
+      } catch {
+        if (!/[}\]]$/.test(text)) break;
+        text = text.slice(0, -1).trimEnd();
+      }
+    }
+  }
+  return out;
 }
 
 function clipText(s: string, n: number): string {

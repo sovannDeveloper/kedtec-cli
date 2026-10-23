@@ -77,9 +77,13 @@ An image over 5 MB is scaled down on macOS (with `sips`) and refused elsewhere.
 Reading the clipboard uses `osascript` on macOS, PowerShell on Windows, and
 `wl-paste` or `xclip` on Linux.
 
-When the agent needs you to decide something, it asks with a menu rather than
-in prose: ↑/↓ (or a number) and Enter pick a choice, "Type something else…"
-takes your own answer, and Esc dismisses the question.
+When the agent needs you to decide something, it asks with a form rather than
+in prose: a tab per question and a Submit tab to review the answers. ↑/↓ (or a
+number) and Enter pick a choice, ←/→ or Tab switch questions, "Type something."
+takes your own answer, "Chat about this" lets you talk it over instead, and Esc
+cancels. A reply that still ends by asking in prose (a "Would you like me to:"
+followed by numbered choices) gets the same form, and your choice is sent as
+your next message.
 
 Attachments share a budget of 60,000 characters per message, since the API
 refuses a message over 100,000. A file over it is not attached: the CLI says so,

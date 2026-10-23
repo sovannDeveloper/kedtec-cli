@@ -5,7 +5,7 @@ import { Agent } from './agent';
 import { ContentPart, ModelInfo, describeError, listModels } from './client';
 import { PERMISSION_MODES, PermissionMode, ResolvedConfig, maskKey, normalizeMode, readStoredConfig, writeStoredConfig } from './config';
 import { ImageAttachment, dataUrl, imageFromFile, isImagePath } from './images';
-import { LineInput, PanelTab, Prompter, TurnKeys, select, tabbedPanel } from './input';
+import { LineInput, PanelTab, Prompter, TurnKeys, questionForm, select, tabbedPanel } from './input';
 import { Asker, PermissionRequest, Permissions } from './permissions';
 import { loadInstructions } from './prompt';
 import { TerminalRenderer } from './render';
@@ -14,7 +14,7 @@ import { ensureIdeBridge } from './ideBridge';
 import { Completer, Screen } from './screen';
 import { loadIgnoreMatcher } from './ignore';
 import { SessionFile, listSessions, newSessionId, saveSession, titleFrom } from './session';
-import { Question, displayPath, isInsideRoot, listProjectFiles, runShell } from './tools';
+import { Question, QuestionAnswers, displayPath, isInsideRoot, listProjectFiles, questionsInProse, runShell } from './tools';
 import { TERMINAL_TITLE, c, clip, colorDiff, columnLayout, columns, setTerminalTitle, stripAnsi, wrapText } from './ui';
 
 // Read from package.json (one level above dist/) so a version bump is a one-place edit.
@@ -332,8 +332,8 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   // An approval has to be seen: bring the view back to the bottom for it.
   const asker: Asker = req => keys.suspend(() => { screen.scrollToBottom(); return askPermission(req, renderer, input); });
   permissions.setAsker(asker);
-  // ask_user, the same way: a menu of the model's options.
-  agent.opts.ask = q => keys.suspend(() => { screen.scrollToBottom(); return askQuestion(q, renderer, input); });
+  // ask_user, the same way: a form of the model's questions.
+  agent.opts.ask = questions => keys.suspend(() => { screen.scrollToBottom(); return askQuestions(questions, renderer); });
 
   // The file open (and lines selected) in the VS Code window this terminal
   // belongs to, via the KEDTec extension: shown on the status line, and handed
@@ -385,7 +385,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     saveSession(session);
   };
 
-  const send = async (text: string, pasted?: Map<number, ImageAttachment>) => {
+  const send = async (text: string, pasted?: Map<number, ImageAttachment>): Promise<void> => {
     const { text: mentioned, attached, skipped, images } = expandMentions(text, root, agent.readState);
     const fromIde = ideContext.forMessage(ide.state);
     const expanded = fromIde ? `${mentioned}\n\n${fromIde.text}` : mentioned;
@@ -405,12 +405,17 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     renderer.thinking();
     keys.start();
     let done = '';
+    let asked: Question[] | null = null;
     try {
       const result = await agent.run(withImages(expanded, pasted, mentionedImages), renderer, current.signal);
       if (result.error) console.log(`\n${c.red('✗')} ${result.error}`);
       // "✻ Baked for 9s" under a finished answer; an interrupted turn has
       // already said so.
       if (!result.stopped) done = renderer.endTurn();
+      // A reply that asks in prose ("Would you like me to: 1. … 2. …") gets
+      // the form ask_user would have shown.
+      const last = agent.messages[agent.messages.length - 1];
+      if (!result.stopped && !result.error && last?.role === 'assistant' && !last.tool_calls && last.content) asked = questionsInProse(last.content);
     } finally {
       keys.stop();
       renderer.endTurn();
@@ -421,6 +426,16 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     if (done) console.log(`\n${done}`);
     // With the pinned box, the echo of the next message supplies the spacing.
     if (!screen.enabled) console.log();
+    if (asked) {
+      const answer = await askQuestions(asked, renderer);
+      if (answer.kind !== 'answered' || answer.answers.every(a => a === undefined)) return;
+      // The answer is sent as the next message, as if typed.
+      const reply = asked.length === 1
+        ? answer.answers[0]!
+        : asked.map((q, i) => (answer.answers[i] === undefined ? '' : `${q.question} → ${answer.answers[i]}`)).filter(Boolean).join('\n');
+      echo(reply);
+      return send(reply);
+    }
   };
 
   const command = async (line: string): Promise<boolean> => {
@@ -640,20 +655,10 @@ function formatTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : String(n);
 }
 
-// The model's question as a menu: its options, then a way to type an answer of
-// one's own. Esc (or an empty typed answer) dismisses it.
-async function askQuestion(q: Question, renderer: TerminalRenderer, input: Prompter): Promise<string | null> {
+// The model's questions, as the form in input.ts.
+function askQuestions(questions: Question[], renderer: TerminalRenderer): Promise<QuestionAnswers> {
   renderer.spinner.stop();
-  const options = q.options.map(o => (o.description ? `${o.label} ${c.gray(`— ${o.description}`)}` : o.label));
-  const choice = await select([...options, c.gray('Type something else…')], 0, {
-    title: `  ${c.bold(c.accent(q.question))}`,
-    footer: c.gray('enter selects · esc dismisses'),
-    transient: true,
-  });
-  if (choice === null) return null;
-  if (choice < q.options.length) return q.options[choice].label;
-  const typed = await input.ask(`  ${c.gray('↳')} `, { history: false, multiline: false, placeholder: 'Type your answer' });
-  return typed.kind === 'line' && typed.text.trim() ? typed.text.trim() : null;
+  return questionForm(questions);
 }
 
 async function askPermission(req: PermissionRequest, renderer: TerminalRenderer, input: Prompter) {

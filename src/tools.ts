@@ -16,7 +16,19 @@ import { c, clip } from './ui';
 export interface Todo { content: string; status: 'pending' | 'in_progress' | 'completed' }
 
 // A question for the person, answered by picking an option or typing one.
-export interface Question { question: string; options: { label: string; description?: string }[] }
+export interface Question {
+  question: string;
+  // The short name on its tab when several are asked: "Focus".
+  header?: string;
+  options: { label: string; description?: string }[];
+}
+
+// How the person answered: an answer per question (undefined where they left
+// one open), the questions dismissed, or "let's talk about it instead".
+export type QuestionAnswers =
+  | { kind: 'answered'; answers: (string | undefined)[] }
+  | { kind: 'dismissed' }
+  | { kind: 'chat' };
 
 export interface ToolContext {
   root: string;
@@ -29,9 +41,9 @@ export interface ToolContext {
   signal: AbortSignal;
   // Shows what a running tool is doing, e.g. the command being run.
   status(label: string): void;
-  // Puts a question to the person: their answer, or null when they dismissed
-  // it. Absent when nobody is there to answer (print mode).
-  ask?(q: Question): Promise<string | null>;
+  // Puts questions to the person, all at once. Absent when nobody is there to
+  // answer (print mode).
+  ask?(questions: Question[]): Promise<QuestionAnswers>;
 }
 
 export interface ToolOutcome {
@@ -648,52 +660,150 @@ const todoWrite: Tool = {
   },
 };
 
+const MAX_QUESTIONS = 4;
 const MAX_QUESTION_OPTIONS = 6;
+
+// One question's options as sent: objects with a label, or bare strings — or
+// all of that as a JSON string, which some models send.
+function parseOptions(raw: unknown): Question['options'] {
+  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { /* not JSON */ } }
+  return (Array.isArray(raw) ? raw as unknown[] : [])
+    .map(o => (typeof o === 'string' ? { label: o } : o as { label?: unknown; description?: unknown }))
+    .filter(o => o && typeof o.label === 'string' && o.label.trim())
+    .map(o => ({ label: (o.label as string).trim(), description: typeof o.description === 'string' && o.description.trim() ? o.description.trim() : undefined }))
+    .slice(0, MAX_QUESTION_OPTIONS);
+}
 
 const askUser: Tool = {
   name: 'ask_user',
   label: 'Question',
   readOnly: true,
-  description: 'Ask the user a question and wait for the answer. The user picks one of the options from a menu, or types their own answer. '
-    + 'Use it whenever you would otherwise end your reply with a question or a numbered list of choices — never ask for a choice in prose. '
-    + `Give 2–${MAX_QUESTION_OPTIONS} short, distinct options, the one you recommend first; do not add an "Other" option, one is always offered. `
+  description: 'Ask the user questions and wait for the answers. The questions are shown as one form, a tab each: the user picks one option per question, or types their own answer. '
+    + 'Use it whenever you would otherwise end your reply with questions or a numbered list of choices — never ask in prose. '
+    + `Put every question you have in one call (${MAX_QUESTIONS} at most), each with a short "header" for its tab. `
+    + 'The menu shows the questions, so do not also write them in your reply. '
+    + `Give each 2–${MAX_QUESTION_OPTIONS} short, distinct options, the one you recommend first; do not add an "Other" option, one is always offered. `
     + 'Ask only what you cannot settle from the code or a sensible default.',
   parameters: {
     type: 'object',
     properties: {
-      question: { type: 'string', description: 'The question, ending with a question mark.' },
-      options: {
+      questions: {
         type: 'array',
-        description: `The choices, ${MAX_QUESTION_OPTIONS} at most.`,
+        description: `1–${MAX_QUESTIONS} questions.`,
         items: {
           type: 'object',
           properties: {
-            label: { type: 'string', description: 'The choice, in a few words.' },
-            description: { type: 'string', description: 'Optional: what choosing it means.' },
+            question: { type: 'string', description: 'The question, ending with a question mark.' },
+            header: { type: 'string', description: 'A very short label for its tab, at most 12 characters: "Focus", "Task type".' },
+            options: {
+              type: 'array',
+              description: `The choices, ${MAX_QUESTION_OPTIONS} at most.`,
+              items: {
+                type: 'object',
+                properties: {
+                  label: { type: 'string', description: 'The choice, in a few words.' },
+                  description: { type: 'string', description: 'Optional: what choosing it means.' },
+                },
+                required: ['label'],
+              },
+            },
           },
-          required: ['label'],
+          required: ['question', 'options'],
         },
       },
     },
-    required: ['question', 'options'],
+    required: ['questions'],
   },
-  summary: input => (typeof input.question === 'string' ? clip(input.question, 80) : ''),
+  summary: input => (Array.isArray(input.questions) && input.questions.length > 1 ? `${input.questions.length} questions` : ''),
   async run(input, ctx) {
-    if (typeof input.question !== 'string' || !input.question.trim()) return fail('ask_user needs "question" as a string.');
-    const options = (Array.isArray(input.options) ? input.options as unknown[] : [])
-      .map(o => (typeof o === 'string' ? { label: o } : o as { label?: unknown; description?: unknown }))
-      .filter(o => o && typeof o.label === 'string' && o.label.trim())
-      .map(o => ({ label: (o.label as string).trim(), description: typeof o.description === 'string' && o.description.trim() ? o.description.trim() : undefined }))
-      .slice(0, MAX_QUESTION_OPTIONS);
-    if (options.length === 0) return fail('ask_user needs "options": at least one choice with a "label".');
-    if (!ctx.ask) return fail('Nobody can answer questions in this run. Decide on your own judgment and say what you assumed.');
-    const answer = await ctx.ask({ question: input.question.trim(), options });
-    if (answer === null) {
-      return { content: 'The user dismissed the question without answering. Do not ask it again; stop and wait for their next message.', display: 'Dismissed' };
+    // Also taken, as models send them: a lone question at the top level, and
+    // questions as bare strings (answered by typing).
+    const raw = Array.isArray(input.questions) ? input.questions as unknown[] : typeof input.question === 'string' ? [input] : [];
+    const questions: Question[] = [];
+    for (const item of raw.slice(0, MAX_QUESTIONS)) {
+      const q = (typeof item === 'string' ? { question: item } : item) as Record<string, unknown> | null;
+      if (!q || typeof q.question !== 'string' || !q.question.trim()) {
+        return fail('ask_user needs "questions" as an array of { "question": string, "options": [{ "label": string }] }.');
+      }
+      const header = typeof q.header === 'string' && q.header.trim() ? q.header.trim() : undefined;
+      questions.push({ question: q.question.trim(), header, options: parseOptions(q.options) });
     }
-    return { content: `The user answered: ${answer}`, display: answer };
+    if (questions.length === 0) return fail('ask_user needs "questions": at least one.');
+    if (!ctx.ask) return fail('Nobody can answer questions in this run. Decide on your own judgment and say what you assumed.');
+    const result = await ctx.ask(questions);
+    if (result.kind === 'dismissed') {
+      return { content: 'The user dismissed the questions without answering. Do not ask again; stop and wait for their next message.', display: 'Dismissed' };
+    }
+    if (result.kind === 'chat') {
+      return {
+        content: 'The user wants to talk this through rather than pick from the options. Do not call ask_user again now; stop and wait for their next message.',
+        display: 'Chose to chat about it',
+      };
+    }
+    const lines = questions.map((q, i) => `"${q.question}" → ${result.answers[i] ?? '(not answered)'}`);
+    const display = questions.length === 1
+      ? result.answers[0] ?? '(not answered)'
+      : questions.map((q, i) => `${q.header ?? q.question} → ${result.answers[i] ?? '(not answered)'}`).join('\n');
+    return { content: `The user answered:\n${lines.join('\n')}`, display };
   },
 };
+
+// A reply that ends by asking in prose what ask_user should have asked:
+//
+//   Would you like me to:                       ← the lead: asks, ends in ":" or "?"
+//   1. Help you locate the correct project?     ← 2–6 numbered or bulleted items
+//   2. Create a sample page?
+//
+//   Please let me know how you'd like to proceed. ← an optional closing line
+//
+// Items that are choices become one question's options; items that are each a
+// question of their own ("Could you clarify: 1. What …? 2. Are you …?") become
+// questions to type answers to. A list that only reports ("Changes: 1. Added
+// …") is not a question, and nor is anything with more text after the list.
+const ASKS = /\?|\b(would you|do you|should i|shall i|can i|which|what|how|could you|can you|let me know|clarify|prefer|choose|select|want me to|like me to|options?)\b/i;
+const QUESTION_START = /^(what|which|who|where|when|why|how|is|are|do|does|did|can|could|should|would|will|have|has)\b/i;
+const OPEN_QUESTIONS_LEAD = /\b(clarify|questions?|tell me|know more|understand|details?)\b/i;
+const OFFERS_ACTIONS = /\b(would you like|do you want|want me to|like me to|should i|shall i)\b/i;
+
+export function questionsInProse(text: string): Question[] | null {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n').map(l => l.trimEnd());
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  // An optional closing paragraph of one short line, after a blank line.
+  let end = lines.length;
+  let closing = '';
+  const last = lines[end - 1]?.trim() ?? '';
+  if (end >= 2 && !/^(\d+[.)]|[-*•])\s/.test(last) && !lines[end - 2].trim() && last.length <= 160) {
+    closing = last;
+    end -= 2;
+  }
+  const items: string[] = [];
+  let i = end - 1;
+  for (; i >= 0; i--) {
+    const m = /^\s*(?:\d+[.)]|[-*•])\s+(.+)$/.exec(lines[i]);
+    if (!m) break;
+    items.unshift(m[1].trim());
+  }
+  while (i >= 0 && !lines[i].trim()) i--;
+  const lead = (lines[i] ?? '').trim().replace(/^[#>*\s]+|\*+$/g, '');
+  if (items.length < 2 || items.length > MAX_QUESTION_OPTIONS || !lead || !/[:?]$/.test(lead)) return null;
+  if (!ASKS.test(lead) && !(closing && ASKS.test(closing))) return null;
+
+  const plain = (s: string) => s.replace(/\*\*|__|`/g, '').trim();
+  const open = !OFFERS_ACTIONS.test(lead) && items.every(it => plain(it).endsWith('?') && QUESTION_START.test(plain(it)));
+  if (open) {
+    if (!OPEN_QUESTIONS_LEAD.test(lead) && !lead.endsWith('?')) return null;
+    return items.slice(0, MAX_QUESTIONS).map((it, n) => ({ question: plain(it), header: `Q${n + 1}`, options: [] }));
+  }
+  const options = items.map(it => {
+    // "**Label** — what it means", "Label: what it means"
+    const m = /^\*\*(.+?)\*\*\s*[:—–-]?\s*(.*)$/.exec(it) ?? /^([^:—–]{2,40})\s*[:—–]\s+(.+)$/.exec(it);
+    const label = plain(m ? m[1] : it).replace(/[?.]$/, '');
+    const description = m && m[2] ? plain(m[2]) : undefined;
+    return { label, description };
+  });
+  const question = lead.endsWith('?') ? lead : `${lead.replace(/:$/, '')}…`;
+  return [{ question, options }];
+}
 
 export const TOOLS: Tool[] = [readFile, writeFile, editFile, listDir, globFiles, grepFiles, runCommand, todoWrite, askUser];
 
