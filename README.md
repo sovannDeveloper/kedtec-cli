@@ -70,7 +70,7 @@ Print mode (`-p`, CI) never asks.
 | `!npm test` | run a command yourself; the output joins the conversation |
 | `@src/app.ts` | attach a file to your message |
 | `@src/app.ts#L10-20` · `@src/app.ts:10-20` · `@src/app.ts #10-20` | attach just those lines (works with any editor, or none) |
-| `ctrl+v` (or `alt+v`) | paste an image from the clipboard; it shows as `[Image #1]` in the box. Dragging an image file onto the terminal does the same |
+| `ctrl+v` or `cmd+v` (or `alt+v`) | paste an image from the clipboard (a screenshot, or an image file copied in Finder); it shows as `[Image #1]` in the box. Dragging an image file onto the terminal does the same |
 | `@screenshot.png` | attach an image file (PNG, JPEG, GIF, WebP) |
 
 Images go to the model as `image_url` parts, so the model has to accept images.

@@ -685,10 +685,16 @@ export class Screen implements Prompter {
         });
       };
       // A paste that is only the paths of image files (a file dragged onto the
-      // terminal) attaches those images instead of the paths.
+      // terminal) attaches those images instead of the paths. An empty paste is
+      // cmd+v (or VS Code's ctrl+v) with an image on the clipboard: the
+      // terminal had no text to send, so the image is read from the clipboard.
       const pasteEnded = async () => {
         const start = pasteStart, end = this.cursor;
         const pasted = this.text.slice(start, end);
+        if (!pasted.trim()) {
+          if (!this.secret) pasteImage();
+          return;
+        }
         const paths = pastedImagePaths(pasted);
         if (!paths) return;
         const loaded = await Promise.all(paths.map(p => imageFromFile(p)));

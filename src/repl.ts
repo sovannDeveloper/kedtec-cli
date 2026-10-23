@@ -163,7 +163,7 @@ function helpTabs(fullScreen: boolean): PanelTab[] {
       c.bold('Shortcuts'),
       ...columnLayout([
         ['! for shell mode', '/ for commands', '@ for file paths', '\\ at line end for newline'],
-        ['esc to clear input', 'esc to interrupt KEDTec', 'shift + tab to cycle modes', 'ctrl + j for newline', 'tab to complete / and @', ...(fullScreen ? ['ctrl + v to paste an image'] : [])],
+        ['esc to clear input', 'esc to interrupt KEDTec', 'shift + tab to cycle modes', 'ctrl + j for newline', 'tab to complete / and @', ...(fullScreen ? ['ctrl + v or cmd + v to paste an image'] : [])],
         [
           '↑ / ↓ for history',
           ...(fullScreen ? ['pgup / pgdn to scroll', 'shift + ↑ / ↓ to scroll a line', 'ctrl + l to clear the screen'] : []),
