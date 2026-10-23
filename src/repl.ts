@@ -394,7 +394,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     const typed = expandMentions(text, root, agent.readState);
     const { attached, skipped, images } = typed;
     const mentioned = withPastes(typed.text, pastes);
-    const fromIde = ideContext.forMessage(ide.state);
+    const fromIde = ideContext.forMessage(ide.state, [...(pastes?.values() ?? [])].map(p => p.text));
     const expanded = fromIde ? `${mentioned}\n\n${fromIde.text}` : mentioned;
     const mentionedImages: ImageAttachment[] = [];
     for (const { path: file, label } of images) {

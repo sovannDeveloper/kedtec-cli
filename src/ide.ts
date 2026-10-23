@@ -106,20 +106,25 @@ export function ideLabel(state: IdeState | null): string {
 
 // What the editor adds to a message: the selection when there is one, else a
 // note naming the open file. Returned only when it differs from what was last
-// sent, so the same selection is not attached to every message after it.
+// sent, so the same selection is not attached to every message after it. A
+// selection the message already carries as pasted text (copied, then pasted
+// with it still selected) is not sent a second time.
 export class IdeContext {
   private lastSent = '';
 
   constructor(private readonly root: string) { }
 
-  forMessage(state: IdeState | null): { text: string; note: string } | null {
+  forMessage(state: IdeState | null, pasted: string[] = []): { text: string; note: string } | null {
     if (!state?.file) return null;
     const rel = inside(state.file, this.root) ? path.relative(this.root, state.file) : state.file;
-    const ranges = selectedRanges(state);
+    const all = selectedRanges(state);
     const digest = crypto.createHash('sha1')
-      .update(`${state.file}\0${ranges.map(r => `${r.startLine}-${r.endLine}\0${r.text}`).join('\0')}`).digest('hex');
+      .update(`${state.file}\0${all.map(r => `${r.startLine}-${r.endLine}\0${r.text}`).join('\0')}`).digest('hex');
     if (digest === this.lastSent) return null;
     this.lastSent = digest;
+    const plain = (s: string) => s.replace(/\r\n?/g, '\n').trim();
+    const pastedPlain = pasted.map(plain);
+    const ranges = all.filter(r => !pastedPlain.some(p => p.includes(plain(r.text))));
     if (ranges.length) {
       const blocks = ranges.map(r => {
         const lines = r.startLine === r.endLine ? `${r.startLine}` : `${r.startLine}-${r.endLine}`;

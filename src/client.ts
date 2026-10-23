@@ -56,9 +56,17 @@ const REQUEST_TIMEOUT_MS = 120_000;
 // A stream that opened and then went silent would otherwise hold the turn open
 // forever. Two budgets, because "nothing yet" and "nothing since" are different
 // failures: many gateways buffer a large tool call's arguments and flush them in
-// one frame, so a long gap after the first chunk is normal.
+// one frame, so a long gap after the first chunk is normal. The wait for the
+// first chunk grows with the prompt: a self-hosted server takes longer to read
+// a big one, and longer still when other requests are queued ahead of it.
 const FIRST_CHUNK_TIMEOUT_MS = 120_000;
+const FIRST_CHUNK_MS_PER_PROMPT_CHAR = 2;
+const MAX_FIRST_CHUNK_TIMEOUT_MS = 600_000;
 const IDLE_TIMEOUT_MS = 300_000;
+
+export function firstChunkTimeout(promptChars: number): number {
+  return Math.min(MAX_FIRST_CHUNK_TIMEOUT_MS, FIRST_CHUNK_TIMEOUT_MS + promptChars * FIRST_CHUNK_MS_PER_PROMPT_CHAR);
+}
 const MAX_ERROR_BODY_CHARS = 500;
 
 // FastAPI answers `{"detail": "…"}`, which the SDK cannot read (it looks for
@@ -141,11 +149,13 @@ export async function streamTurn(client: OpenAI, req: TurnRequest, handlers: Tur
   signal.addEventListener('abort', onAbort, { once: true });
 
   let timer: NodeJS.Timeout | undefined;
+  let gotChunk = false;
   const arm = (ms: number) => {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => { watchdogFired = true; local.abort(); }, ms);
   };
-  arm(FIRST_CHUNK_TIMEOUT_MS);
+  const firstWait = firstChunkTimeout(JSON.stringify(req.messages).length);
+  arm(firstWait);
 
   const payload: Record<string, unknown> = {
     model: req.model,
@@ -168,9 +178,12 @@ export async function streamTurn(client: OpenAI, req: TurnRequest, handlers: Tur
   try {
     const stream = await client.chat.completions.create(
       payload as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
-      { signal: local.signal },
+      // The SDK's own timeout (and its retry) would cut the wait short: the
+      // watchdog above is what bounds it.
+      { signal: local.signal, timeout: firstWait + 10_000, maxRetries: 0 },
     );
     for await (const chunk of stream) {
+      gotChunk = true;
       arm(IDLE_TIMEOUT_MS);
       const raw = chunk as unknown as Record<string, unknown>;
       // The KEDTec API's extra top-level keys: citations, pages read, cache hit.
@@ -213,6 +226,9 @@ export async function streamTurn(client: OpenAI, req: TurnRequest, handlers: Tur
     }
   } catch (err) {
     if (signal.aborted) throw new StoppedError();
+    if (watchdogFired && !gotChunk) {
+      throw new Error(`The model did not start answering within ${Math.round(firstWait / 1000)}s — the server may be busy with other requests. Try again.`);
+    }
     if (watchdogFired) throw new Error('The model stream went silent and was closed. Try again, or ask for a smaller change.');
     throw err;
   } finally {

@@ -610,3 +610,21 @@ test('pastes: long text is saved to a temp file and goes back in place of its pl
   assert.strictEqual(withPastes('plain', undefined), 'plain');
   fs.rmSync(path.dirname(small.path), { recursive: true, force: true });
 });
+
+test('client: the wait for the first chunk grows with the prompt, within bounds', () => {
+  const { firstChunkTimeout } = require('../dist/client');
+  assert.strictEqual(firstChunkTimeout(0), 120_000);
+  assert.strictEqual(firstChunkTimeout(90_000), 300_000);
+  assert.strictEqual(firstChunkTimeout(5_000_000), 600_000);
+});
+
+test('ide: a selection already pasted into the message is not sent again', () => {
+  const { IdeContext } = require('../dist/ide');
+  const sel = { startLine: 1, endLine: 2, text: 'alpha\r\nbeta' };
+  const state = { file: '/p/notes.md', selection: sel, selections: [sel] };
+  const pasted = new IdeContext('/p').forMessage(state, ['intro\nalpha\nbeta\nmore']);
+  assert.ok(!pasted.text.includes('<ide_selection'));
+  assert.strictEqual(pasted.note, '');
+  const typed = new IdeContext('/p').forMessage(state, ['something else']);
+  assert.ok(typed.text.includes('<ide_selection file="notes.md" lines="1-2">'));
+});
