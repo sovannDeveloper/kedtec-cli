@@ -10,6 +10,8 @@ exports.stripAnsi = stripAnsi;
 exports.setTerminalTitle = setTerminalTitle;
 exports.columns = columns;
 exports.clip = clip;
+exports.wrapText = wrapText;
+exports.columnLayout = columnLayout;
 exports.formatDuration = formatDuration;
 exports.formatCount = formatCount;
 exports.colorDiff = colorDiff;
@@ -30,6 +32,7 @@ exports.c = {
     magenta: wrap('35', '\x1b[39m'),
     cyan: wrap('36', '\x1b[39m'),
     gray: wrap('90', '\x1b[39m'),
+    inverse: wrap('7', '\x1b[27m'),
     // KEDTec teal.
     accent: wrap('38;5;30', '\x1b[39m'),
 };
@@ -50,6 +53,44 @@ function columns() {
 function clip(s, n) {
     const one = s.replace(/\s+/g, ' ').trim();
     return one.length > n ? `${one.slice(0, n - 1)}…` : one;
+}
+// Plain text broken into lines of at most `width` columns, at spaces.
+function wrapText(text, width) {
+    const lines = [];
+    let line = '';
+    for (const word of text.split(/\s+/).filter(Boolean)) {
+        if (line && line.length + 1 + word.length > width) {
+            lines.push(line);
+            line = word;
+        }
+        else
+            line = line ? `${line} ${word}` : word;
+    }
+    if (line)
+        lines.push(line);
+    return lines.join('\n');
+}
+// Groups of short lines laid side by side, as many groups to a row as fit in
+// `width`, each column as wide as its longest line. A group is never split, so
+// on a narrow terminal the columns fold under each other instead of wrapping.
+function columnLayout(groups, width, gap = 4) {
+    const len = (s) => stripAnsi(s).length;
+    for (let k = groups.length; k >= 1; k--) {
+        const colWidths = Array.from({ length: k }, (_, i) => Math.max(0, ...groups.filter((_g, j) => j % k === i).flat().map(len)));
+        if (k > 1 && colWidths.reduce((a, b) => a + b, 0) + gap * (k - 1) > width)
+            continue;
+        const out = [];
+        for (let start = 0; start < groups.length; start += k) {
+            const row = groups.slice(start, start + k);
+            const height = Math.max(...row.map(g => g.length));
+            for (let i = 0; i < height; i++) {
+                const cells = row.map((g, j) => (j === row.length - 1 ? g[i] ?? '' : (g[i] ?? '') + ' '.repeat(colWidths[j] + gap - len(g[i] ?? ''))));
+                out.push(cells.join('').trimEnd());
+            }
+        }
+        return out;
+    }
+    return [];
 }
 // ── spinner ──────────────────────────────────────────────────────────────────
 const FRAMES = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];

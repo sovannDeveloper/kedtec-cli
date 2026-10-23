@@ -40,6 +40,7 @@ exports.expectReport = expectReport;
 exports.loadHistory = loadHistory;
 exports.saveHistory = saveHistory;
 exports.select = select;
+exports.tabbedPanel = tabbedPanel;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const readline = __importStar(require("readline"));
@@ -205,7 +206,9 @@ class LineInput {
 }
 exports.LineInput = LineInput;
 // An arrow-key menu. Resolves with the chosen index, or null for Esc / ctrl+c.
-function select(options, initial = 0, { numbered = true, indent = '  ', footer } = {}) {
+// A `title` is drawn above the options. A `transient` menu, title included, is
+// erased once answered, so the caller can print the choice in its place.
+function select(options, initial = 0, { numbered = true, indent = '  ', footer, title, transient = false } = {}) {
     return new Promise(resolve => {
         const stdin = process.stdin;
         const keys = keyStream();
@@ -228,8 +231,12 @@ function select(options, initial = 0, { numbered = true, indent = '  ', footer }
             if (footer)
                 process.stdout.write(`\x1b[2K\n\x1b[2K${indent}${footer}\n`);
         };
+        const titleLines = title ? title.split('\n').length : 0;
         const done = (value) => {
             keys.off('keypress', onKey);
+            // Back to the title's first row, then erase from there to the end.
+            if (transient)
+                process.stdout.write(`\x1b[${titleLines + options.length + footerLines}A\r\x1b[J`);
             if (stdin.isTTY)
                 stdin.setRawMode(wasRaw);
             stdin.pause();
@@ -251,7 +258,62 @@ function select(options, initial = 0, { numbered = true, indent = '  ', footer }
             render(false);
         };
         keys.on('keypress', onKey);
+        if (title)
+            process.stdout.write(`${title}\n`);
         render(true);
+    });
+}
+// A dialog with tabs (/help), drawn in place like select() and erased when it
+// closes: ←/→ or tab switch tabs, Esc, enter or q close it.
+function tabbedPanel(title, tabs) {
+    return new Promise(resolve => {
+        const stdin = process.stdin;
+        const keys = keyStream();
+        readline.emitKeypressEvents(keys);
+        const wasRaw = !!stdin.isRaw;
+        if (stdin.isTTY)
+            stdin.setRawMode(true);
+        stdin.resume();
+        let idx = 0;
+        let drawn = 0;
+        const erase = () => { if (drawn)
+            process.stdout.write(`\x1b[${drawn}A\r\x1b[J`); drawn = 0; };
+        const render = () => {
+            const width = (0, ui_1.columns)();
+            const tabRow = tabs.map((t, i) => (i === idx ? ui_1.c.inverse(ui_1.c.bold(ui_1.c.accent(` ${t.name} `))) : ` ${t.name} `)).join(' ');
+            const lines = [
+                ui_1.c.accent('─'.repeat(width - 1)),
+                '',
+                `  ${ui_1.c.bold(ui_1.c.accent(title))}  ${tabRow}`,
+                '',
+                ...tabs[idx].body(width - 4).map(l => (l ? `  ${l}` : '')),
+                '',
+                `  ${ui_1.c.gray(ui_1.c.italic(`${tabs.length > 1 ? '←/→ to switch tabs · ' : ''}Esc to close`))}`,
+            ];
+            erase();
+            process.stdout.write(lines.map(l => `${l}\n`).join(''));
+            drawn = lines.length;
+        };
+        const onKey = (str, key) => {
+            const name = key?.name;
+            if (name === 'escape' || name === 'return' || name === 'enter' || str === 'q' || (key?.ctrl && name === 'c')) {
+                keys.off('keypress', onKey);
+                erase();
+                if (stdin.isTTY)
+                    stdin.setRawMode(wasRaw);
+                stdin.pause();
+                return resolve();
+            }
+            if (name === 'left' || (name === 'tab' && key?.shift))
+                idx = (idx - 1 + tabs.length) % tabs.length;
+            else if (name === 'right' || name === 'tab')
+                idx = (idx + 1) % tabs.length;
+            else
+                return;
+            render();
+        };
+        keys.on('keypress', onKey);
+        render();
     });
 }
 // While a turn runs: swallow typing, turn Esc or ctrl+c into an interrupt, and

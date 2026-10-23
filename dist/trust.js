@@ -89,21 +89,6 @@ function addTrusted(dir, file = exports.TRUST_FILE) {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     fs.writeFileSync(file, JSON.stringify({ folders }, null, 2) + '\n', { mode: 0o600 });
 }
-function wrapText(text, width) {
-    const lines = [];
-    let line = '';
-    for (const word of text.split(/\s+/).filter(Boolean)) {
-        if (line && line.length + 1 + word.length > width) {
-            lines.push(line);
-            line = word;
-        }
-        else
-            line = line ? `${line} ${word}` : word;
-    }
-    if (line)
-        lines.push(line);
-    return lines.join('\n');
-}
 // true to carry on; false when the user declined or cancelled.
 async function confirmTrust(root) {
     if (isTrusted(root))
@@ -113,8 +98,8 @@ async function confirmTrust(root) {
     out.write(`${ui_1.c.yellow('─'.repeat(width))}\n`);
     out.write(`${ui_1.c.bold(ui_1.c.yellow('Accessing workspace:'))}\n\n`);
     out.write(`${ui_1.c.bold(real(root))}\n\n`);
-    out.write(`${wrapText("Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.", width)}\n\n`);
-    out.write(`${wrapText("KEDTec'll be able to read, edit, and execute files here.", width)}\n\n`);
+    out.write(`${(0, ui_1.wrapText)("Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.", width)}\n\n`);
+    out.write(`${(0, ui_1.wrapText)("KEDTec'll be able to read, edit, and execute files here.", width)}\n\n`);
     const choice = await (0, input_1.select)(['No, exit', 'Yes, I trust this folder'], 0, { numbered: false, indent: '', footer: ui_1.c.gray('Enter to confirm · Esc to cancel') });
     if (choice !== 1)
         return false;

@@ -37,6 +37,7 @@ exports.TOOLS = void 0;
 exports.resolvePath = resolvePath;
 exports.isInsideRoot = isInsideRoot;
 exports.displayPath = displayPath;
+exports.listProjectFiles = listProjectFiles;
 exports.globToRegExp = globToRegExp;
 exports.commandEnv = commandEnv;
 exports.runShell = runShell;
@@ -115,6 +116,11 @@ function walkFiles(dir, root, matcher, signal) {
         }
     }
     return out;
+}
+// Every project file the search tools would see, relative and slash-separated
+// (the @ completion in the input box).
+function listProjectFiles(root) {
+    return walkFiles(root, root, (0, ignore_1.loadIgnoreMatcher)(root), new AbortController().signal).map(f => f.rel);
 }
 // gitignore-ish glob → RegExp. A pattern with no slash matches a file name at
 // any depth ("*.test.ts"); one with a slash is matched against the path.

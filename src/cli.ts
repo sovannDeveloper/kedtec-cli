@@ -171,9 +171,10 @@ async function cmdLogin(): Promise<void> {
   }
   let model = stored.model;
   if (models.length > 0) {
-    console.log('Default model (enter selects):');
-    const choice = await select(models.map(m => m.id), Math.max(0, models.findIndex(m => m.id === stored.model)));
+    const choice = await select(models.map(m => m.id), Math.max(0, models.findIndex(m => m.id === stored.model)),
+      { title: 'Default model (enter selects):', transient: true });
     if (choice !== null) model = models[choice].id;
+    if (model) console.log(`Default model: ${c.bold(model)}`);
   }
   writeStoredConfig({ ...stored, endpoint, apiKey, model });
   console.log(c.gray(`Saved to ${CONFIG_FILE}`));

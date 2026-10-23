@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { HOME_DIR } from './config';
 import { select } from './input';
-import { c, columns } from './ui';
+import { c, columns, wrapText } from './ui';
 
 // Before the first interactive session in a folder, ask whether it is one the
 // user trusts. The agent reads, edits and runs commands there, and a project
@@ -48,16 +48,6 @@ export function addTrusted(dir: string, file = TRUST_FILE): void {
   folders.push(target);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, JSON.stringify({ folders }, null, 2) + '\n', { mode: 0o600 });
-}
-
-function wrapText(text: string, width: number): string {
-  const lines: string[] = [];
-  let line = '';
-  for (const word of text.split(/\s+/).filter(Boolean)) {
-    if (line && line.length + 1 + word.length > width) { lines.push(line); line = word; } else line = line ? `${line} ${word}` : word;
-  }
-  if (line) lines.push(line);
-  return lines.join('\n');
 }
 
 // true to carry on; false when the user declined or cancelled.

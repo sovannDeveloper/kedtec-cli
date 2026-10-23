@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Screen = void 0;
+exports.Screen = exports.Transcript = void 0;
 const readline = __importStar(require("readline"));
 const input_1 = require("./input");
 const ui_1 = require("./ui");
@@ -70,6 +70,10 @@ const ui_1 = require("./ui");
 const RESIZE_SETTLE_MS = 50;
 const MAX_TRANSCRIPT_LINES = 20_000;
 const WHEEL_ROWS = 3;
+// Suggestion rows shown above the input box at once; the list scrolls past it.
+const MAX_SUGGESTION_ROWS = 8;
+// Shell mode's colour (a message starting with "!").
+const shellColor = (s) => `\x1b[38;5;205m${s}\x1b[39m`;
 // Display width of one grapheme, the way a terminal advances its cursor: the
 // sum over code points, combining marks and format characters counting 0 and
 // East Asian wide characters and emoji counting 2. A Khmer cluster with a
@@ -134,8 +138,9 @@ function wrapAnsi(line, width) {
 }
 // The conversation as lines, built from what the program writes. Only what
 // that output actually contains is understood: text, colour, newlines, a
-// carriage return or "erase line" starting a line over, and "cursor up" — the
-// approval menu redraws its options in place with it.
+// carriage return or "erase line" starting a line over, "cursor up" — the
+// approval menu redraws its options in place with it — and "erase below",
+// which a transient menu (select) uses to remove itself once answered.
 class Transcript {
     lines = [''];
     cur = 0;
@@ -153,6 +158,8 @@ class Transcript {
                     this.cur = Math.max(0, this.cur - (Number(m[1]) || 1));
                 else if (m[2] === 'K' && m[1] === '2')
                     this.set('');
+                else if (m[2] === 'J' && !m[1])
+                    this.eraseBelow();
             }
             else if (tok === '\n' || tok === '\r\n') {
                 this.cur++;
@@ -175,6 +182,13 @@ class Transcript {
     }
     append(s) { this.lines[this.cur] += s; this.cache[this.cur] = undefined; }
     set(s) { this.lines[this.cur] = s; this.cache[this.cur] = undefined; }
+    // The cursor's line and every line after it. Only ever sent at the start of
+    // a line, so the whole of the cursor's line goes.
+    eraseBelow() {
+        this.set('');
+        this.lines.length = this.cur + 1;
+        this.cache.length = this.cur + 1;
+    }
     // Every row to display at `width`. The empty line the cursor sits on after a
     // final newline is not content.
     rows(width) {
@@ -204,6 +218,7 @@ class Transcript {
         this.cache = [];
     }
 }
+exports.Transcript = Transcript;
 class Screen {
     active = false;
     out = process.stdout;
@@ -220,8 +235,19 @@ class Screen {
     secret = false;
     placeholder = '';
     history = (0, input_1.loadHistory)();
-    // Slash commands, for Tab completion.
+    // Slash commands, for Tab completion when no suggestion list is open.
     completions = [];
+    // Suggestions while typing, shown above the box.
+    completer;
+    suggestions = null;
+    selected = 0;
+    // The text and cursor the suggestions were computed for, and the ones Esc
+    // closed them at (they stay closed until the input changes).
+    suggestedFor = '';
+    dismissedAt = '';
+    // Shell mode: "!" typed into an empty box. The "!" is the prompt, not part of
+    // the text, and the message is sent as "!command".
+    shell = false;
     // shift+tab while editing (the permission-mode cycle).
     onShiftTab;
     // The loading line above the input box.
@@ -409,7 +435,7 @@ class Screen {
         const view = content.slice(start, start + viewH);
         if (this.scroll > 0) {
             const note = ` ↓ ${this.scroll} more line${this.scroll === 1 ? '' : 's'} · scroll down or PgDn `;
-            area.rows[1] = `\x1b[90m${'─'.repeat(2)}\x1b[39m\x1b[33m${note}\x1b[39m\x1b[90m${'─'.repeat(Math.max(0, cols - 3 - note.length))}\x1b[39m`;
+            area.rows[area.ruleRow] = `\x1b[90m${'─'.repeat(2)}\x1b[39m\x1b[33m${note}\x1b[39m\x1b[90m${'─'.repeat(Math.max(0, cols - 3 - note.length))}\x1b[39m`;
         }
         const next = [];
         for (let i = 0; i < viewH; i++)
@@ -425,9 +451,13 @@ class Screen {
             s += `\x1b[${viewH + area.cursorRow + 1};${area.cursorCol + 1}H\x1b[?25h`;
         this.rawWrite(s);
     }
+    // The prompt in front of the input: "!" in shell mode.
+    lead() {
+        return this.shell ? `${shellColor('!')} ` : this.prompt;
+    }
     // The input wrapped into screen rows, with the cursor's row and column.
     layoutInput() {
-        const promptWidth = (0, ui_1.stripAnsi)(this.prompt).length;
+        const promptWidth = (0, ui_1.stripAnsi)(this.lead()).length;
         const avail = Math.max(10, this.cols - promptWidth - 1);
         const shown = this.secret ? '*'.repeat([...segmenter.segment(this.text)].length) : this.text;
         const cursorAt = this.secret ? [...segmenter.segment(this.text.slice(0, this.cursor))].length : this.cursor;
@@ -478,24 +508,62 @@ class Screen {
         const plain = (0, ui_1.stripAnsi)(line);
         return plain.length <= width ? line : plain.slice(0, Math.max(0, width - 1)) + '…';
     }
-    // The fixed rows at the bottom, and where the cursor goes among them.
+    // The fixed rows at the bottom, where the cursor goes among them, and which
+    // row is the rule above the input (it carries the "more lines" note).
     area(cols) {
         const { lines, cursorRow, cursorCol } = this.layoutInput();
         const boxRows = Math.min(lines.length, this.maxInputRows());
         // Which wrapped rows are visible when the input is taller than the box.
         const first = Math.max(0, Math.min(cursorRow - boxRows + 1, lines.length - boxRows));
-        const rule = `\x1b[90m${'─'.repeat(cols - 1)}\x1b[39m`;
-        const promptWidth = (0, ui_1.stripAnsi)(this.prompt).length;
-        const rows = [this.fit(this.activity), rule];
+        const line = '─'.repeat(cols - 1);
+        const rule = this.shell ? shellColor(line) : `\x1b[90m${line}\x1b[39m`;
+        const lead = this.lead();
+        const promptWidth = (0, ui_1.stripAnsi)(lead).length;
+        const rows = [this.fit(this.activity), ...this.suggestionRows(cols)];
+        const ruleRow = rows.length;
+        rows.push(rule);
         for (let i = 0; i < boxRows; i++) {
             const idx = first + i;
-            const lead = idx === 0 ? (this.editing ? this.prompt : `\x1b[90m${(0, ui_1.stripAnsi)(this.prompt)}\x1b[39m`) : ' '.repeat(promptWidth);
-            const body = idx === 0 && !this.text && this.placeholder ? `\x1b[90m${this.placeholder}\x1b[39m` : lines[idx] ?? '';
-            rows.push(this.fit(lead + body));
+            const head = idx === 0 ? (this.editing ? lead : `\x1b[90m${(0, ui_1.stripAnsi)(lead)}\x1b[39m`) : ' '.repeat(promptWidth);
+            const body = idx === 0 && !this.text && this.placeholder && !this.shell ? `\x1b[90m${this.placeholder}\x1b[39m` : lines[idx] ?? '';
+            rows.push(this.fit(head + body));
         }
         rows.push(rule);
-        rows.push(this.statusRow(cols));
-        return { rows, cursorRow: 2 + (cursorRow - first), cursorCol };
+        rows.push(this.shell ? `  ${shellColor('! for shell mode')}` : this.statusRow(cols));
+        return { rows, cursorRow: ruleRow + 1 + (cursorRow - first), cursorCol, ruleRow };
+    }
+    // The open suggestion list: a window of it that keeps the selection in view,
+    // labels in one column and details after them, the selection highlighted.
+    suggestionRows(cols) {
+        const s = this.editing ? this.suggestions : null;
+        if (!s)
+            return [];
+        const n = Math.min(MAX_SUGGESTION_ROWS, s.items.length);
+        const top = Math.max(0, this.selected - n + 1);
+        const labelWidth = Math.min(Math.floor(cols * 0.45), Math.max(...s.items.map(it => it.label.length)) + 4);
+        return s.items.slice(top, top + n).map((it, k) => {
+            const on = top + k === this.selected;
+            const label = it.label.length > labelWidth - 2 ? `${it.label.slice(0, labelWidth - 3)}…` : it.label;
+            const room = cols - 1 - 4 - labelWidth;
+            const detail = !it.detail || room < 10 ? '' : it.detail.length > room ? `${it.detail.slice(0, room - 1)}…` : it.detail;
+            const rest = detail ? ' '.repeat(labelWidth - label.length) + (on ? ui_1.c.accent(detail) : ui_1.c.gray(detail)) : '';
+            return on ? `  ${ui_1.c.accent(`❯ ${label}`)}${rest}` : `    ${label}${rest}`;
+        });
+    }
+    // Ask the completer again when the text or cursor moved since last time.
+    updateSuggestions() {
+        const at = `${this.text}\0${this.cursor}`;
+        if (at === this.suggestedFor)
+            return;
+        this.suggestedFor = at;
+        this.selected = 0;
+        const s = this.editing && !this.secret && !this.shell && at !== this.dismissedAt ? this.completer?.(this.text, this.cursor) : null;
+        this.suggestions = s && s.items.length ? s : null;
+    }
+    closeSuggestions() {
+        this.suggestions = null;
+        this.suggestedFor = '';
+        this.dismissedAt = '';
     }
     statusRow(cols) {
         const leftLen = (0, ui_1.stripAnsi)(this.statusLeft).length;
@@ -546,6 +614,10 @@ class Screen {
             let pasting = false;
             this.render();
             const finish = (result) => {
+                if (result.kind === 'line' && this.shell)
+                    result = { kind: 'line', text: `!${result.text}` };
+                this.shell = false;
+                this.closeSuggestions();
                 keys.off('keypress', onKey);
                 this.rawWrite('\x1b[?2004l');
                 stdin.setRawMode(false);
@@ -582,13 +654,22 @@ class Screen {
             const wordRight = () => { let i = this.cursor; while (i < this.text.length && /\s/.test(this.text[i]))
                 i++; while (i < this.text.length && !/\s/.test(this.text[i]))
                 i++; return i; };
+            // A "!command" from history comes back in shell mode, and the draft is
+            // kept the same way.
             const recall = (idx) => {
-                if (idx === -1)
-                    this.text = draft;
-                else
-                    this.text = this.history[idx];
+                if (histIdx === -1)
+                    draft = this.shell ? `!${this.text}` : this.text;
+                const entry = idx === -1 ? draft : this.history[idx];
+                this.shell = entry.startsWith('!');
+                this.text = this.shell ? entry.slice(1) : entry;
                 histIdx = idx;
                 this.cursor = this.text.length;
+            };
+            // Put the chosen suggestion in place of what it completes.
+            const accept = (it) => {
+                const s = this.suggestions;
+                this.text = this.text.slice(0, s.start) + it.value + this.text.slice(s.end);
+                this.cursor = s.start + it.value.length;
             };
             let inReport = false;
             const onKey = (str, key) => {
@@ -614,6 +695,7 @@ class Screen {
                 }
                 if (name === 'paste-end') {
                     pasting = false;
+                    this.updateSuggestions();
                     this.render();
                     return;
                 }
@@ -624,11 +706,42 @@ class Screen {
                         insert(str.replace(/\r\n?/g, '\n'));
                     return; // rendered once, at paste-end
                 }
+                // An open suggestion list takes the keys that pick from it.
+                const open = this.suggestions;
+                if (open && !key?.ctrl && !key?.meta && !key?.shift) {
+                    const n = open.items.length;
+                    if (name === 'up' || name === 'down') {
+                        this.selected = (this.selected + (name === 'up' ? -1 : 1) + n) % n;
+                        this.render();
+                        return;
+                    }
+                    if (name === 'tab' || name === 'return') {
+                        const it = open.items[this.selected];
+                        if (name === 'return' && it.submit)
+                            return finish({ kind: 'line', text: it.value.trim() });
+                        accept(it);
+                        this.updateSuggestions();
+                        this.render();
+                        return;
+                    }
+                    if (name === 'escape') {
+                        this.suggestions = null;
+                        this.dismissedAt = this.suggestedFor;
+                        this.render();
+                        return;
+                    }
+                }
                 if (key?.ctrl && name === 'c') {
                     if (this.text) {
                         this.text = '';
                         this.cursor = 0;
                         histIdx = -1;
+                        this.updateSuggestions();
+                        this.render();
+                        return;
+                    }
+                    if (this.shell) {
+                        this.shell = false;
                         this.render();
                         return;
                     }
@@ -653,6 +766,9 @@ class Screen {
                 }
                 else if ((name === 'enter' || (name === 'return' && key?.meta)) && multiline) {
                     insert('\n'); // ctrl+j or alt+enter
+                }
+                else if (name === 'backspace' && !this.text && this.shell) {
+                    this.shell = false;
                 }
                 else if (name === 'backspace') {
                     if (key?.meta || key?.ctrl) {
@@ -721,8 +837,6 @@ class Screen {
                         this.cursor = Math.min(prevStart + col, ls - 1);
                     }
                     else if (useHistory && histIdx + 1 < this.history.length) {
-                        if (histIdx === -1)
-                            draft = this.text;
                         recall(histIdx + 1);
                     }
                 }
@@ -759,11 +873,17 @@ class Screen {
                     }
                 }
                 else if (name === 'escape') {
-                    // Nothing to interrupt at the prompt; Esc clears what was typed.
+                    // Nothing to interrupt at the prompt; Esc clears what was typed, and
+                    // on an empty line leaves shell mode.
                     if (this.text) {
                         this.text = '';
                         this.cursor = 0;
                     }
+                    else
+                        this.shell = false;
+                }
+                else if (str === '!' && !this.text && !this.shell && !this.secret) {
+                    this.shell = true;
                 }
                 else if (str && !key?.ctrl && !key?.meta && str >= ' ') {
                     insert(str);
@@ -771,6 +891,7 @@ class Screen {
                 else {
                     return;
                 }
+                this.updateSuggestions();
                 this.render();
             };
             keys.on('keypress', onKey);

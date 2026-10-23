@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.VERSION = void 0;
+exports.makeCompleter = makeCompleter;
 exports.runRepl = runRepl;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
@@ -45,6 +46,7 @@ const render_1 = require("./render");
 const ide_1 = require("./ide");
 const ideBridge_1 = require("./ideBridge");
 const screen_1 = require("./screen");
+const ignore_1 = require("./ignore");
 const session_1 = require("./session");
 const tools_1 = require("./tools");
 const ui_1 = require("./ui");
@@ -69,30 +71,130 @@ function box(lines) {
         ui_1.c.accent(`╰${'─'.repeat(width - 2)}╯`),
     ].join('\n');
 }
-const HELP = `
-${ui_1.c.bold('Commands')}
-  /help               this list
-  /clear              start a new conversation
-  /compact [focus]    summarise the conversation to free context
-  /model [id]         show or switch the model (no id: pick from a list)
-  /models             list the models the endpoint serves
-  /mode [name]        permission mode: default · acceptEdits · auto · plan · bypass (no name: cycle)
-  /plan               shortcut for /mode plan
-  /init               write a KEDTEC.md describing this project
-  /resume             reopen an earlier conversation in this directory
-  /todos              show the current checklist
-  /cost               token usage this session
-  /status             endpoint, model, mode, key and instruction files
-  /mouse [on|off]     mouse-wheel scrolling (off gives plain drag-to-select back)
-  /exit               quit (or ctrl+d)
-
-${ui_1.c.bold('Input')}
-  !command            run a shell command yourself; its output goes into the conversation
-  @path/to/file       attach a file's contents to the message
-  line ending in \\    continue on the next line (pasting several lines also works)
-  esc / ctrl+c        interrupt the agent · ctrl+c twice at the prompt quits
-  wheel · PgUp/PgDn   scroll the conversation (shift+↑/↓ one line); the input stays put
-`;
+// The slash commands: the /help Commands tab and Tab completion both read this.
+const COMMANDS = [
+    { name: '/help', about: 'this help' },
+    { name: '/clear', about: 'start a new conversation' },
+    { name: '/compact', args: '[focus]', about: 'summarise the conversation to free context' },
+    { name: '/model', args: '[id]', about: 'show or switch the model (no id: pick from a list)' },
+    { name: '/models', about: 'list the models the endpoint serves' },
+    { name: '/mode', args: '[name]', about: 'permission mode: default · acceptEdits · auto · plan · bypass (no name: cycle)' },
+    { name: '/plan', about: 'shortcut for /mode plan' },
+    { name: '/init', about: 'write a KEDTEC.md describing this project' },
+    { name: '/resume', about: 'reopen an earlier conversation in this directory' },
+    { name: '/todos', about: 'show the current checklist' },
+    { name: '/cost', about: 'token usage this session' },
+    { name: '/status', about: 'endpoint, model, mode, key and instruction files' },
+    { name: '/mouse', args: '[on|off]', about: 'mouse-wheel scrolling (off gives plain drag-to-select back)' },
+    { name: '/exit', about: 'quit (or ctrl+d)' },
+];
+const SLASH_COMMANDS = COMMANDS.map(cmd => cmd.name);
+const MAX_MENTION_SUGGESTIONS = 50;
+// How long the project's file list is reused between @ completions.
+const FILE_LIST_TTL_MS = 30_000;
+// What the input box offers while typing: the slash commands matching a
+// leading "/", and for an "@" the entries of the folder being typed into, then
+// (for a bare name) project files whose name or path contains it. Ignored
+// files are left out, as the search tools leave them out.
+function makeCompleter(root) {
+    let files = [];
+    let listedAt = 0;
+    const projectFiles = () => {
+        if (Date.now() - listedAt > FILE_LIST_TTL_MS) {
+            files = (0, tools_1.listProjectFiles)(root);
+            listedAt = Date.now();
+        }
+        return files;
+    };
+    const mentions = (query) => {
+        const slash = query.lastIndexOf('/');
+        const dirPart = query.slice(0, slash + 1);
+        const prefix = query.slice(slash + 1).toLowerCase();
+        const out = [];
+        const dirAbs = path.resolve(root, dirPart || '.');
+        if ((0, tools_1.isInsideRoot)(dirAbs, root)) {
+            const matcher = (0, ignore_1.loadIgnoreMatcher)(root);
+            let entries = [];
+            try {
+                entries = fs.readdirSync(dirAbs, { withFileTypes: true });
+            }
+            catch { /* not a folder (yet) */ }
+            for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+                if (e.name === '.git' || !e.name.toLowerCase().startsWith(prefix))
+                    continue;
+                const rel = path.relative(root, path.join(dirAbs, e.name)).split(path.sep).join('/');
+                if (matcher.isIgnored(rel, e.isDirectory()))
+                    continue;
+                out.push(`${dirPart}${e.name}${e.isDirectory() ? '/' : ''}`);
+            }
+        }
+        if (prefix && !dirPart) {
+            const all = projectFiles();
+            const byName = all.filter(f => path.posix.basename(f).toLowerCase().includes(prefix));
+            const byPath = all.filter(f => f.toLowerCase().includes(prefix));
+            for (const f of [...byName, ...byPath]) {
+                if (out.length >= MAX_MENTION_SUGGESTIONS)
+                    break;
+                if (!out.includes(f))
+                    out.push(f);
+            }
+        }
+        return out.slice(0, MAX_MENTION_SUGGESTIONS);
+    };
+    return (text, cursor) => {
+        if (/^\/\S*$/.test(text)) {
+            const typed = text.toLowerCase();
+            const items = COMMANDS.filter(cmd => cmd.name.startsWith(typed)).map(cmd => ({
+                label: cmd.args ? `${cmd.name} ${cmd.args}` : cmd.name, detail: cmd.about, value: `${cmd.name} `, submit: true,
+            }));
+            return items.length ? { items, start: 0, end: text.length } : null;
+        }
+        const at = /(?:^|\s)@([^\s@]*)$/.exec(text.slice(0, cursor));
+        if (!at)
+            return null;
+        const start = cursor - at[1].length - 1;
+        let end = cursor;
+        while (end < text.length && !/\s/.test(text[end]))
+            end++;
+        // A folder stays open for the next level; a file ends the mention.
+        const items = mentions(at[1]).map(p => ({ label: p, value: p.endsWith('/') ? `@${p}` : `@${p} ` }));
+        return items.length ? { items, start, end } : null;
+    };
+}
+const HELP_URL = 'https://github.com/sovannDeveloper/kedtec-cli#readme';
+// The /help panel's tabs. The scrolling keys exist only in the full-screen view.
+function helpTabs(fullScreen) {
+    const general = {
+        name: 'General',
+        body: width => [
+            ...(0, ui_1.wrapText)('KEDTec understands your codebase, makes edits with your permission, and runs commands — right from your terminal.', width).split('\n'),
+            ui_1.c.bold('Shortcuts'),
+            ...(0, ui_1.columnLayout)([
+                ['! for shell mode', '/ for commands', '@ for file paths', '\\ at line end for newline'],
+                ['esc to clear input', 'esc to interrupt KEDTec', 'shift + tab to cycle modes', 'ctrl + j for newline', 'tab to complete / and @'],
+                [
+                    '↑ / ↓ for history',
+                    ...(fullScreen ? ['pgup / pgdn to scroll', 'shift + ↑ / ↓ to scroll a line', 'ctrl + l to clear the screen'] : []),
+                    'ctrl + c twice to exit',
+                ],
+            ], width),
+            '',
+            ...(width >= 16 + HELP_URL.length ? [`For more help: ${ui_1.c.cyan(HELP_URL)}`] : ['For more help:', ui_1.c.cyan(HELP_URL)]),
+        ],
+    };
+    const commands = {
+        name: 'Commands',
+        body: width => {
+            const label = (cmd) => (cmd.args ? `${cmd.name} ${cmd.args}` : cmd.name);
+            const col = Math.max(...COMMANDS.map(cmd => label(cmd).length)) + 3;
+            return COMMANDS.map(cmd => {
+                const about = width - col > 10 ? (0, ui_1.clip)(cmd.about, width - col) : '';
+                return `${ui_1.c.bold(cmd.name)}${cmd.args ? ` ${ui_1.c.gray(cmd.args)}` : ''}${' '.repeat(col - label(cmd).length)}${ui_1.c.gray(about)}`.trimEnd();
+            });
+        },
+    };
+    return [general, commands];
+}
 const INIT_PROMPT = `Analyse this codebase and write a KEDTEC.md file at the project root for future agent sessions.
 Include: what the project is; the commands to install, build, run, lint and test (and how to run a single test); the high-level architecture and how the main pieces fit together, which needs several files read to understand; and the conventions and gotchas a newcomer would not guess.
 Do not list every file or repeat what is obvious from the tree, and do not invent anything you have not seen. If a KEDTEC.md, CLAUDE.md or AGENTS.md already exists, improve it instead of starting over. Read README files and manifests first.`;
@@ -137,6 +239,7 @@ async function runRepl(opts) {
     const screen = new screen_1.Screen();
     const input = screen_1.Screen.supported() ? screen : new input_1.LineInput();
     screen.completions = SLASH_COMMANDS;
+    screen.completer = makeCompleter(root);
     // Usage is known once a round's stream ends; the bar's context figure follows
     // it. With the pinned layout the spinner draws in the row above the input box.
     const renderer = new render_1.TerminalRenderer(process.stdout, {
@@ -260,7 +363,8 @@ async function runRepl(opts) {
         switch (cmd) {
             case 'help':
             case '?':
-                console.log(HELP);
+                await (0, input_1.tabbedPanel)('Help', helpTabs(screen.enabled));
+                console.log(ui_1.c.gray('  ⎿  Help dialog dismissed'));
                 return true;
             case 'exit':
             case 'quit':
@@ -312,9 +416,10 @@ async function runRepl(opts) {
                     console.log(ui_1.c.gray(`  Model: ${agent.opts.model}`));
                     return true;
                 }
-                console.log(ui_1.c.gray('  Choose a model (enter selects, esc cancels):'));
-                const choice = await (0, input_1.select)(opts.models.map(m => (m.name !== m.id ? `${m.id} ${ui_1.c.gray(m.name)}` : m.id)), Math.max(0, opts.models.findIndex(m => m.id === agent.opts.model)));
-                if (choice !== null) {
+                const choice = await (0, input_1.select)(opts.models.map(m => (m.name !== m.id ? `${m.id} ${ui_1.c.gray(m.name)}` : m.id)), Math.max(0, opts.models.findIndex(m => m.id === agent.opts.model)), { title: ui_1.c.gray('  Choose a model (enter selects, esc cancels):'), transient: true });
+                if (choice === null)
+                    console.log(ui_1.c.gray(`  ⎿  Model: ${agent.opts.model} (unchanged)`));
+                else {
                     opts.setModel(opts.models[choice]);
                     refreshBar();
                     const save = (0, config_1.readStoredConfig)();
@@ -367,7 +472,7 @@ async function runRepl(opts) {
                     console.log(ui_1.c.gray('  No earlier conversations in this directory.'));
                     return true;
                 }
-                const choice = await (0, input_1.select)(sessions.map(s => `${(0, ui_1.clip)(s.title || '(untitled)', 50)} ${ui_1.c.gray(`${s.updated.slice(0, 16).replace('T', ' ')} · ${s.messages.length} msgs`)}`));
+                const choice = await (0, input_1.select)(sessions.map(s => `${(0, ui_1.clip)(s.title || '(untitled)', 50)} ${ui_1.c.gray(`${s.updated.slice(0, 16).replace('T', ' ')} · ${s.messages.length} msgs`)}`), 0, { title: ui_1.c.gray('  Resume a conversation (enter selects, esc cancels):'), transient: true });
                 if (choice !== null) {
                     persist();
                     session = sessions[choice];
@@ -498,7 +603,6 @@ function rememberMode(mode) {
     }
     catch { /* remembering is a convenience */ }
 }
-const SLASH_COMMANDS = ['/help', '/clear', '/compact', '/model', '/models', '/mode', '/plan', '/init', '/resume', '/todos', '/cost', '/status', '/mouse', '/exit'];
 function echo(text) {
     const lines = text.split('\n');
     console.log(`\n${ui_1.c.gray('>')} ${lines[0]}${lines.slice(1).map(l => `\n  ${l}`).join('')}`);

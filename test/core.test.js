@@ -273,6 +273,114 @@ test('--no-project-config: the project instruction files are not read', () => {
   assert.ok(!loadInstructions(dir, false).some(f => f.path.startsWith(dir)));
 });
 
+test('select: a transient menu erases itself, title included, leaving room for the choice', async () => {
+  const { select } = require('../dist/input');
+  const { Transcript } = require('../dist/screen');
+  const { stripAnsi } = require('../dist/ui');
+  const t = new Transcript();
+  t.write('> /model\n');
+  const write = process.stdout.write;
+  process.stdout.write = s => { t.write(String(s)); return true; };
+  try {
+    const picked = select(['mobile', 'nuxt', 'backend'], 0, { title: 'Choose a model:', transient: true });
+    assert.strictEqual(t.rows(80).length, 5, 'the command, the title and three options');
+    process.stdin.emit('keypress', undefined, { name: 'down' });
+    process.stdin.emit('keypress', undefined, { name: 'return' });
+    assert.strictEqual(await picked, 1);
+  } finally {
+    process.stdout.write = write;
+  }
+  t.write('⎿  Model: nuxt\n');
+  assert.deepStrictEqual(t.rows(80).map(stripAnsi), ['> /model', '⎿  Model: nuxt']);
+});
+
+test('tabbed panel: tabs switch in place, and closing erases it', async () => {
+  const { tabbedPanel } = require('../dist/input');
+  const { Transcript } = require('../dist/screen');
+  const { stripAnsi } = require('../dist/ui');
+  const t = new Transcript();
+  t.write('> /help\n');
+  const write = process.stdout.write;
+  process.stdout.write = s => { t.write(String(s)); return true; };
+  try {
+    const closed = tabbedPanel('Help', [
+      { name: 'General', body: () => ['one', 'two', 'three'] },
+      { name: 'Commands', body: () => ['/help'] },
+    ]);
+    const shown = () => t.rows(200).map(stripAnsi);
+    assert.ok(shown().includes('  three'));
+    process.stdin.emit('keypress', undefined, { name: 'right' });
+    assert.ok(shown().includes('  /help') && !shown().includes('  three'), 'the old tab is replaced, not stacked');
+    process.stdin.emit('keypress', undefined, { name: 'escape' });
+    await closed;
+  } finally {
+    process.stdout.write = write;
+  }
+  assert.deepStrictEqual(t.rows(200).map(stripAnsi), ['> /help']);
+});
+
+test('column layout: groups sit side by side when they fit, and fold when they do not', () => {
+  const { columnLayout } = require('../dist/ui');
+  const groups = [['! shell', '/ commands'], ['esc to clear'], ['ctrl + c']];
+  assert.deepStrictEqual(columnLayout(groups, 80), ['! shell       esc to clear    ctrl + c', '/ commands']);
+  assert.deepStrictEqual(columnLayout(groups, 12), ['! shell', '/ commands', 'esc to clear', 'ctrl + c']);
+});
+
+// The input box, driven by keypresses without a terminal: drawing is dropped
+// and raw mode is a no-op.
+async function typeInto(screen, keys) {
+  const stdin = process.stdin;
+  const setRawMode = stdin.setRawMode;
+  stdin.setRawMode = () => stdin;
+  screen.active = true;
+  screen.rawWrite = () => true;
+  screen.measure = async () => null;
+  try {
+    const answer = screen.ask('> ');
+    for (const k of keys) {
+      if (k.length === 1) stdin.emit('keypress', k, { name: k, sequence: k });
+      else stdin.emit('keypress', undefined, { name: k });
+    }
+    return await answer;
+  } finally {
+    stdin.setRawMode = setRawMode;
+    screen.active = false;
+  }
+}
+
+test('input box: "!" switches to shell mode, which sends the line as a command', async () => {
+  const { Screen } = require('../dist/screen');
+  const screen = new Screen();
+  assert.deepStrictEqual(await typeInto(screen, ['!', 'l', 's', 'return']), { kind: 'line', text: '!ls' });
+  // Backspace on an empty shell line leaves shell mode; a "!" mid-line is just text.
+  assert.deepStrictEqual(await typeInto(screen, ['!', 'backspace', 'h', 'i', '!', 'return']), { kind: 'line', text: 'hi!' });
+});
+
+test('input box: suggestions for / and @ are picked with arrows, tab and enter', async () => {
+  const { Screen } = require('../dist/screen');
+  const { makeCompleter } = require('../dist/repl');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kedtec-complete-'));
+  fs.mkdirSync(path.join(dir, 'src'));
+  fs.writeFileSync(path.join(dir, 'src', 'app.ts'), '');
+  fs.writeFileSync(path.join(dir, 'secret.log'), '');
+  fs.writeFileSync(path.join(dir, '.gitignore'), '*.log\n');
+  const screen = new Screen();
+  screen.completer = makeCompleter(dir);
+  // "/mo" lists /model, /models, /mode, /mouse; ↓ then enter runs the second.
+  assert.deepStrictEqual(await typeInto(screen, ['/', 'm', 'o', 'down', 'return']), { kind: 'line', text: '/models' });
+  // "@" lists the folder; tab opens src/, tab again takes app.ts. Ignored files are not offered.
+  const complete = makeCompleter(dir);
+  assert.ok(!complete('@', 1).items.some(i => i.label === 'secret.log'));
+  assert.deepStrictEqual(await typeInto(screen, ['r', 'e', 'a', 'd', ' ', '@', 's', 'tab', 'tab', 'return']),
+    { kind: 'line', text: 'read @src/app.ts ' });
+  // Esc closes the list; enter then sends what was typed.
+  assert.deepStrictEqual(await typeInto(screen, ['/', 'm', 'o', 'escape', 'return']), { kind: 'line', text: '/mo' });
+  // A "!command" recalled from history comes back in shell mode.
+  assert.strictEqual(screen.shell, false);
+  const recalled = await typeInto(Object.assign(new Screen(), { history: ['!npm test'] }), ['up', 'return']);
+  assert.deepStrictEqual(recalled, { kind: 'line', text: '!npm test' });
+});
+
 test('shell: Git Bash is found next to git, never the WSL bash on PATH', () => {
   const { findGitBash } = require('../dist/shell');
   const files = new Set(['C:\\Windows\\System32\\bash.exe', 'D:\\Tools\\Git\\cmd\\git.exe', 'D:\\Tools\\Git\\bin\\bash.exe']);

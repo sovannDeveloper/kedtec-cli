@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as readline from 'readline';
 import { PassThrough } from 'stream';
 import { HOME_DIR } from './config';
-import { c } from './ui';
+import { c, columns } from './ui';
 
 // Terminal input. A readline interface exists only while a question is being
 // asked and is closed between them, so that while a turn runs the terminal is
@@ -171,10 +171,13 @@ export class LineInput implements Prompter {
 }
 
 // An arrow-key menu. Resolves with the chosen index, or null for Esc / ctrl+c.
+// A `title` is drawn above the options. A `transient` menu, title included, is
+// erased once answered, so the caller can print the choice in its place.
 export function select(
   options: string[],
   initial = 0,
-  { numbered = true, indent = '  ', footer }: { numbered?: boolean; indent?: string; footer?: string } = {},
+  { numbered = true, indent = '  ', footer, title, transient = false }:
+    { numbered?: boolean; indent?: string; footer?: string; title?: string; transient?: boolean } = {},
 ): Promise<number | null> {
   return new Promise(resolve => {
     const stdin = process.stdin;
@@ -195,8 +198,11 @@ export function select(
       });
       if (footer) process.stdout.write(`\x1b[2K\n\x1b[2K${indent}${footer}\n`);
     };
+    const titleLines = title ? title.split('\n').length : 0;
     const done = (value: number | null) => {
       keys.off('keypress', onKey);
+      // Back to the title's first row, then erase from there to the end.
+      if (transient) process.stdout.write(`\x1b[${titleLines + options.length + footerLines}A\r\x1b[J`);
       if (stdin.isTTY) stdin.setRawMode(wasRaw);
       stdin.pause();
       resolve(value);
@@ -211,7 +217,63 @@ export function select(
       render(false);
     };
     keys.on('keypress', onKey);
+    if (title) process.stdout.write(`${title}\n`);
     render(true);
+  });
+}
+
+export interface PanelTab {
+  name: string;
+  // The tab's lines for a body `width` columns wide. Lines must fit: a line the
+  // terminal wraps throws off the redraw, which counts lines, not rows.
+  body(width: number): string[];
+}
+
+// A dialog with tabs (/help), drawn in place like select() and erased when it
+// closes: ←/→ or tab switch tabs, Esc, enter or q close it.
+export function tabbedPanel(title: string, tabs: PanelTab[]): Promise<void> {
+  return new Promise(resolve => {
+    const stdin = process.stdin;
+    const keys = keyStream();
+    readline.emitKeypressEvents(keys);
+    const wasRaw = !!stdin.isRaw;
+    if (stdin.isTTY) stdin.setRawMode(true);
+    stdin.resume();
+    let idx = 0;
+    let drawn = 0;
+    const erase = () => { if (drawn) process.stdout.write(`\x1b[${drawn}A\r\x1b[J`); drawn = 0; };
+    const render = () => {
+      const width = columns();
+      const tabRow = tabs.map((t, i) => (i === idx ? c.inverse(c.bold(c.accent(` ${t.name} `))) : ` ${t.name} `)).join(' ');
+      const lines = [
+        c.accent('─'.repeat(width - 1)),
+        '',
+        `  ${c.bold(c.accent(title))}  ${tabRow}`,
+        '',
+        ...tabs[idx].body(width - 4).map(l => (l ? `  ${l}` : '')),
+        '',
+        `  ${c.gray(c.italic(`${tabs.length > 1 ? '←/→ to switch tabs · ' : ''}Esc to close`))}`,
+      ];
+      erase();
+      process.stdout.write(lines.map(l => `${l}\n`).join(''));
+      drawn = lines.length;
+    };
+    const onKey = (str: string | undefined, key: { name?: string; ctrl?: boolean; shift?: boolean } | undefined) => {
+      const name = key?.name;
+      if (name === 'escape' || name === 'return' || name === 'enter' || str === 'q' || (key?.ctrl && name === 'c')) {
+        keys.off('keypress', onKey);
+        erase();
+        if (stdin.isTTY) stdin.setRawMode(wasRaw);
+        stdin.pause();
+        return resolve();
+      }
+      if (name === 'left' || (name === 'tab' && key?.shift)) idx = (idx - 1 + tabs.length) % tabs.length;
+      else if (name === 'right' || name === 'tab') idx = (idx + 1) % tabs.length;
+      else return;
+      render();
+    };
+    keys.on('keypress', onKey);
+    render();
   });
 }
 

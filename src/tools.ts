@@ -113,6 +113,12 @@ function walkFiles(dir: string, root: string, matcher: IgnoreMatcher, signal: Ab
   return out;
 }
 
+// Every project file the search tools would see, relative and slash-separated
+// (the @ completion in the input box).
+export function listProjectFiles(root: string): string[] {
+  return walkFiles(root, root, loadIgnoreMatcher(root), new AbortController().signal).map(f => f.rel);
+}
+
 // gitignore-ish glob → RegExp. A pattern with no slash matches a file name at
 // any depth ("*.test.ts"); one with a slash is matched against the path.
 export function globToRegExp(glob: string): RegExp {
