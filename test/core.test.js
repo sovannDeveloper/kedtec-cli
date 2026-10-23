@@ -381,6 +381,31 @@ test('input box: suggestions for / and @ are picked with arrows, tab and enter',
   assert.deepStrictEqual(recalled, { kind: 'line', text: '!npm test' });
 });
 
+test('mentions: @file#L10-20 attaches just those lines, @file the whole file', () => {
+  const { expandMentions, parseMention } = require('../dist/repl');
+  assert.deepStrictEqual(parseMention('src/a.ts'), { file: 'src/a.ts' });
+  assert.deepStrictEqual(parseMention('src/a.ts#L3-5'), { file: 'src/a.ts', start: 3, end: 5 });
+  assert.deepStrictEqual(parseMention('src/a.ts#L3-L5'), { file: 'src/a.ts', start: 3, end: 5 });
+  assert.deepStrictEqual(parseMention('src/a.ts:5-3'), { file: 'src/a.ts', start: 3, end: 5 });
+  assert.deepStrictEqual(parseMention('src/a.ts#7'), { file: 'src/a.ts', start: 7, end: 7 });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kedtec-mention-'));
+  fs.mkdirSync(path.join(dir, 'src'));
+  const file = path.join(dir, 'src', 'a.ts');
+  fs.writeFileSync(file, ['one', 'two', 'three', 'four', 'five', 'six'].join('\n'));
+  const readState = new Map();
+  const ranged = expandMentions('why @src/a.ts#L3-4?', dir, readState);
+  assert.deepStrictEqual(ranged.attached, ['src/a.ts:3-4']);
+  assert.ok(ranged.text.includes('<file path="src/a.ts" lines="3-4" total="6">\n3|three\n4|four\n</file>'));
+  assert.ok(!ranged.text.includes('2|two'));
+  // A partial read still lets the agent edit the file, as read_file with offset does.
+  assert.ok(readState.has(file));
+  // Past the end is clamped; wholly past it attaches nothing.
+  assert.ok(expandMentions('@src/a.ts:5-99', dir, new Map()).text.includes('5|five\n6|six\n</file>'));
+  assert.deepStrictEqual(expandMentions('@src/a.ts:50', dir, new Map()).attached, []);
+  // The whole file, and the same file twice with different ranges.
+  assert.deepStrictEqual(expandMentions('@src/a.ts @src/a.ts:1 @src/a.ts:1', dir, new Map()).attached, ['src/a.ts', 'src/a.ts:1']);
+});
+
 test('shell: Git Bash is found next to git, never the WSL bash on PATH', () => {
   const { findGitBash } = require('../dist/shell');
   const files = new Set(['C:\\Windows\\System32\\bash.exe', 'D:\\Tools\\Git\\cmd\\git.exe', 'D:\\Tools\\Git\\bin\\bash.exe']);

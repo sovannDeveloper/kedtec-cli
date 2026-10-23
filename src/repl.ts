@@ -180,25 +180,48 @@ Include: what the project is; the commands to install, build, run, lint and test
 Do not list every file or repeat what is obvious from the tree, and do not invent anything you have not seen. If a KEDTEC.md, CLAUDE.md or AGENTS.md already exists, improve it instead of starting over. Read README files and manifests first.`;
 
 const MAX_MENTION_BYTES = 200 * 1024;
+// A range picks lines out of a file too big to attach whole; the lines picked
+// are still held to MAX_MENTION_BYTES.
+const MAX_RANGED_FILE_BYTES = 10 * 1024 * 1024;
 
-// "@src/app.ts" → the file's text, attached to the message. Only files inside
-// the project, and the read counts as a read for the edit guard.
-function expandMentions(text: string, root: string, agent: Agent): { text: string; attached: string[] } {
+// "src/app.ts#L10-20", "src/app.ts#L10", "src/app.ts:10-20" → the file and its
+// lines. This is how a selection reaches the model from a terminal with no
+// editor bridge behind it (Android Studio, Xcode, a plain shell).
+export function parseMention(raw: string): { file: string; start?: number; end?: number } {
+  const m = /^(.+?)(?:#L?(\d+)(?:-L?(\d+))?|:(\d+)(?:-(\d+))?)$/.exec(raw);
+  if (!m) return { file: raw };
+  const a = Math.max(1, Number(m[2] ?? m[4]));
+  const b = Math.max(1, Number(m[3] ?? m[5] ?? a));
+  return { file: m[1], start: Math.min(a, b), end: Math.max(a, b) };
+}
+
+// "@src/app.ts" → the file's text, attached to the message; "@src/app.ts#L10-20"
+// → just those lines. Only files inside the project, and the read counts as a
+// read for the edit guard, as read_file with offset/limit does.
+export function expandMentions(text: string, root: string, readState: Map<string, number>): { text: string; attached: string[] } {
   const attached: string[] = [];
   const blocks: string[] = [];
   for (const m of text.matchAll(/(^|\s)@([^\s@]+)/g)) {
-    const raw = m[2].replace(/[.,;:!?)]+$/, '');
-    const abs = path.resolve(root, raw);
-    if (!isInsideRoot(abs, root) || attached.includes(abs)) continue;
+    const { file, start, end } = parseMention(m[2].replace(/[.,;:!?)]+$/, ''));
+    const abs = path.resolve(root, file);
+    const rel = displayPath(abs, root);
+    const label = start === undefined ? rel : start === end ? `${rel}:${start}` : `${rel}:${start}-${end}`;
+    if (!isInsideRoot(abs, root) || attached.includes(label)) continue;
     try {
       const st = fs.statSync(abs);
-      if (!st.isFile() || st.size > MAX_MENTION_BYTES) continue;
+      if (!st.isFile() || st.size > (start === undefined ? MAX_MENTION_BYTES : MAX_RANGED_FILE_BYTES)) continue;
       const body = fs.readFileSync(abs, 'utf8');
       if (body.includes('\u0000')) continue;
-      const numbered = body.split('\n').map((l, i) => `${i + 1}|${l}`).join('\n');
-      blocks.push(`<file path="${displayPath(abs, root)}">\n${numbered}\n</file>`);
-      attached.push(abs);
-      agent.readState.set(abs, st.mtimeMs);
+      const lines = body.split('\n');
+      const first = start ?? 1;
+      const last = Math.min(end ?? lines.length, lines.length);
+      if (first > last) continue;
+      const numbered = lines.slice(first - 1, last).map((l, i) => `${first + i}|${l}`).join('\n');
+      if (Buffer.byteLength(numbered) > MAX_MENTION_BYTES) continue;
+      const lineAttr = start === undefined ? '' : ` lines="${first}-${last}" total="${lines.length}"`;
+      blocks.push(`<file path="${rel}"${lineAttr}>\n${numbered}\n</file>`);
+      attached.push(label);
+      readState.set(abs, st.mtimeMs);
     } catch { /* not a file: leave the text alone */ }
   }
   if (blocks.length === 0) return { text, attached };
@@ -303,11 +326,11 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   };
 
   const send = async (text: string) => {
-    const { text: mentioned, attached } = expandMentions(text, root, agent);
+    const { text: mentioned, attached } = expandMentions(text, root, agent.readState);
     const fromIde = ideContext.forMessage(ide.state);
     const expanded = fromIde ? `${mentioned}\n\n${fromIde.text}` : mentioned;
     if (fromIde?.note) console.log(c.gray(`  ${fromIde.note}`));
-    if (attached.length) console.log(c.gray(`  ⎿  attached ${attached.map(a => displayPath(a, root)).join(', ')}`));
+    if (attached.length) console.log(c.gray(`  ⎿  attached ${attached.join(', ')}`));
     if (!session.title || session.title === '(untitled)') session.title = titleFrom(text);
     current = new AbortController();
     renderer.beginTurn();

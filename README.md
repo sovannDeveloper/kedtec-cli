@@ -68,6 +68,7 @@ Print mode (`-p`, CI) never asks.
 | `/todos` · `/cost` · `/status` | checklist · token usage · configuration |
 | `!npm test` | run a command yourself; the output joins the conversation |
 | `@src/app.ts` | attach a file to your message |
+| `@src/app.ts#L10-20` · `@src/app.ts:10-20` · `@src/app.ts#L10` | attach just those lines (works with any editor, or none) |
 | `\` at line end | continue on the next line (pasting several lines also works) |
 | `esc` / `ctrl+c` | interrupt the agent; `ctrl+c` twice at the prompt quits |
 
@@ -104,6 +105,11 @@ installs into the editor itself the first time it runs in a VS Code terminal
 **Developer: Reload Window**. Set `KEDTEC_NO_IDE_BRIDGE=1` to stop the CLI from
 installing it. The extension writes the editor state to `~/.kedtec/ide/<pid>.json`
 and the CLI picks the window whose workspace contains the current directory.
+
+That also works from Terminal.app, iTerm or any other terminal, once the
+extension is installed and VS Code has the project open. Other editors
+(Android Studio, Xcode) have no bridge: name the lines yourself with
+`@path/to/file#L10-20`.
 
 ## Permission modes
 
