@@ -99,7 +99,7 @@ export function ideLabel(state: IdeState | null): string {
   if (ranges.length) {
     const n = lineCount(ranges);
     const lines = `${n} line${n === 1 ? '' : 's'}`;
-    return ranges.length === 1 ? `⧉${lines} selected` : `⧉ ${lines} in ${ranges.length} selections`;
+    return ranges.length === 1 ? `⧉ ${lines} selected` : `⧉ ${lines} in ${ranges.length} selections`;
   }
   return `⧉ ${path.basename(state.file)}`;
 }
