@@ -77,6 +77,10 @@ An image over 5 MB is scaled down on macOS (with `sips`) and refused elsewhere.
 Reading the clipboard uses `osascript` on macOS, PowerShell on Windows, and
 `wl-paste` or `xclip` on Linux.
 
+When the agent needs you to decide something, it asks with a menu rather than
+in prose: ↑/↓ (or a number) and Enter pick a choice, "Type something else…"
+takes your own answer, and Esc dismisses the question.
+
 Attachments share a budget of 60,000 characters per message, since the API
 refuses a message over 100,000. A file over it is not attached: the CLI says so,
 and the model can still read it with its tools.

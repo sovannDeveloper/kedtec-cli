@@ -14,7 +14,7 @@ import { ensureIdeBridge } from './ideBridge';
 import { Completer, Screen } from './screen';
 import { loadIgnoreMatcher } from './ignore';
 import { SessionFile, listSessions, newSessionId, saveSession, titleFrom } from './session';
-import { displayPath, isInsideRoot, listProjectFiles, runShell } from './tools';
+import { Question, displayPath, isInsideRoot, listProjectFiles, runShell } from './tools';
 import { TERMINAL_TITLE, c, clip, colorDiff, columnLayout, columns, setTerminalTitle, stripAnsi, wrapText } from './ui';
 
 // Read from package.json (one level above dist/) so a version bump is a one-place edit.
@@ -332,6 +332,8 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   // An approval has to be seen: bring the view back to the bottom for it.
   const asker: Asker = req => keys.suspend(() => { screen.scrollToBottom(); return askPermission(req, renderer, input); });
   permissions.setAsker(asker);
+  // ask_user, the same way: a menu of the model's options.
+  agent.opts.ask = q => keys.suspend(() => { screen.scrollToBottom(); return askQuestion(q, renderer, input); });
 
   // The file open (and lines selected) in the VS Code window this terminal
   // belongs to, via the KEDTec extension: shown on the status line, and handed
@@ -636,6 +638,22 @@ function echo(text: string): void {
 
 function formatTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : String(n);
+}
+
+// The model's question as a menu: its options, then a way to type an answer of
+// one's own. Esc (or an empty typed answer) dismisses it.
+async function askQuestion(q: Question, renderer: TerminalRenderer, input: Prompter): Promise<string | null> {
+  renderer.spinner.stop();
+  const options = q.options.map(o => (o.description ? `${o.label} ${c.gray(`— ${o.description}`)}` : o.label));
+  const choice = await select([...options, c.gray('Type something else…')], 0, {
+    title: `  ${c.bold(c.accent(q.question))}`,
+    footer: c.gray('enter selects · esc dismisses'),
+    transient: true,
+  });
+  if (choice === null) return null;
+  if (choice < q.options.length) return q.options[choice].label;
+  const typed = await input.ask(`  ${c.gray('↳')} `, { history: false, multiline: false, placeholder: 'Type your answer' });
+  return typed.kind === 'line' && typed.text.trim() ? typed.text.trim() : null;
 }
 
 async function askPermission(req: PermissionRequest, renderer: TerminalRenderer, input: Prompter) {

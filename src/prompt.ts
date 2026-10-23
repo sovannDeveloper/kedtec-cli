@@ -149,7 +149,7 @@ export function buildSystemPrompt(opts: { root: string; mode: PermissionMode; mo
     `- Model: ${opts.model}`,
     opts.nonInteractive
       ? '- Running non-interactively (CI / print mode): nobody can answer questions or approve prompts mid-run. Complete the task on your own judgment and finish with a clear summary.'
-      : '- Running interactively in a terminal.',
+      : '- Running interactively in a terminal. To ask the user something, call ask_user with the likely answers as options — they pick one from a menu — instead of asking in prose or listing numbered choices.',
   ].join('\n'));
   parts.push(`# ${MODE_TEXT[opts.mode]}`);
 

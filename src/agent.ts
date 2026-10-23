@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { ChatMessage, ContentPart, KbSource, ResearchPage, StoppedError, completeOnce, contentText, describeError, streamTurn } from './client';
 import { Permissions } from './permissions';
-import { TOOLS, Todo, ToolOutcome, findTool, toolSchemas } from './tools';
+import { Question, TOOLS, Todo, ToolOutcome, findTool, toolSchemas } from './tools';
 
 // What the loop reports as it goes. The interactive REPL and print mode render
 // these differently; the loop itself never writes to the terminal.
@@ -35,6 +35,8 @@ export interface AgentOptions {
   maxTurns: number;
   systemPrompt: () => string;
   contextWindow?: number;
+  // How ask_user reaches the person; without it the tool is not offered.
+  ask?: (q: Question) => Promise<string | null>;
 }
 
 // How many times a reply cut off by max_tokens is asked to carry on before the
@@ -53,7 +55,7 @@ export class Agent {
   constructor(public opts: AgentOptions) {}
 
   private schemas() {
-    return toolSchemas(TOOLS);
+    return toolSchemas(this.opts.ask ? TOOLS : TOOLS.filter(t => t.name !== 'ask_user'));
   }
 
   async run(input: string | ContentPart[], events: AgentEvents, signal: AbortSignal): Promise<RunResult> {
@@ -167,6 +169,7 @@ export class Agent {
         todos: this.todos,
         signal,
         status: label => events.status(label),
+        ask: this.opts.ask,
       });
     } catch (err) {
       outcome = { content: `The tool failed: ${describeError(err)}`, isError: true };

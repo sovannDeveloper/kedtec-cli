@@ -459,3 +459,17 @@ test('images: dropped paths, @mentions and placeholders become image parts', asy
   assert.strictEqual(parts[0].text, 'fix [Image #1]');
   assert.ok(parts[1].image_url.url.startsWith('data:image/png;base64,'));
 });
+
+test('ask_user: the answer, a dismissal, and no one to ask', async () => {
+  const tool = TOOLS.find(t => t.name === 'ask_user');
+  const input = { question: 'Which skin?', options: [{ label: 'Green', description: 'classic' }, 'Neon', { label: '' }] };
+  let asked;
+  const ctx = answer => ({ ask: async q => { asked = q; return answer; } });
+  const picked = await tool.run(input, ctx('Neon'));
+  assert.strictEqual(picked.content, 'The user answered: Neon');
+  // Plain strings are accepted as labels; empty ones are dropped.
+  assert.deepStrictEqual(asked.options, [{ label: 'Green', description: 'classic' }, { label: 'Neon', description: undefined }]);
+  assert.strictEqual((await tool.run(input, ctx(null))).display, 'Dismissed');
+  assert.ok((await tool.run(input, {})).isError);
+  assert.ok((await tool.run({ question: 'x?', options: [] }, ctx('a'))).isError);
+});
