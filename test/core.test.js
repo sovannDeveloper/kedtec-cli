@@ -404,6 +404,16 @@ test('mentions: @file#L10-20 attaches just those lines, @file the whole file', (
   assert.deepStrictEqual(expandMentions('@src/a.ts:50', dir, new Map()).attached, []);
   // The whole file, and the same file twice with different ranges.
   assert.deepStrictEqual(expandMentions('@src/a.ts @src/a.ts:1 @src/a.ts:1', dir, new Map()).attached, ['src/a.ts', 'src/a.ts:1']);
+  // The range as the next word, as people type it.
+  assert.deepStrictEqual(expandMentions('@src/a.ts #2-3 explain', dir, new Map()).attached, ['src/a.ts:2-3']);
+  assert.deepStrictEqual(expandMentions('@src/a.ts #L2 explain', dir, new Map()).attached, ['src/a.ts:2']);
+  // A file over the budget is left out and named, rather than sent and refused by the API.
+  fs.writeFileSync(path.join(dir, 'big.json'), 'x'.repeat(70_000) + '\nend');
+  const big = expandMentions('explain @big.json', dir, new Map());
+  assert.deepStrictEqual(big.attached, []);
+  assert.strictEqual(big.skipped.length, 1);
+  assert.ok(big.text.length < 1000);
+  assert.deepStrictEqual(expandMentions('@big.json #2', dir, new Map()).attached, ['big.json:2']);
 });
 
 test('shell: Git Bash is found next to git, never the WSL bash on PATH', () => {

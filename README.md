@@ -68,7 +68,11 @@ Print mode (`-p`, CI) never asks.
 | `/todos` · `/cost` · `/status` | checklist · token usage · configuration |
 | `!npm test` | run a command yourself; the output joins the conversation |
 | `@src/app.ts` | attach a file to your message |
-| `@src/app.ts#L10-20` · `@src/app.ts:10-20` · `@src/app.ts#L10` | attach just those lines (works with any editor, or none) |
+| `@src/app.ts#L10-20` · `@src/app.ts:10-20` · `@src/app.ts #10-20` | attach just those lines (works with any editor, or none) |
+
+Attachments share a budget of 60,000 characters per message, since the API
+refuses a message over 100,000. A file over it is not attached: the CLI says so,
+and the model can still read it with its tools.
 | `\` at line end | continue on the next line (pasting several lines also works) |
 | `esc` / `ctrl+c` | interrupt the agent; `ctrl+c` twice at the prompt quits |
 
