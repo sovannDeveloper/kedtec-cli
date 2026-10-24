@@ -288,10 +288,14 @@ export function withImages(text: string, pasted: Map<number, ImageAttachment> | 
 
 export async function runRepl(opts: ReplOptions): Promise<void> {
   const { agent, permissions, root } = opts;
-  // Name the tab "✳ KEDTec" rather than "node", and give it back on every way
-  // out — /exit, ctrl+c twice, a crash — so the shell's tab is not left wearing it.
+  // Name the tab after the conversation ("✳ Fix todo widget overflow", or
+  // "✳ KEDTec" before it has a title) rather than "node", and give it back on
+  // every way out — /exit, ctrl+c twice, a crash — so the shell's tab is not
+  // left wearing it. It is set again at every prompt as well as whenever the
+  // title changes: VS Code can drop a title it was given once it notices the
+  // process changed, so once at start-up is not enough.
   process.title = 'kedtec';
-  setTerminalTitle(TERMINAL_TITLE);
+  const showTitle = () => setTerminalTitle(session.title ? `✳ ${clip(session.title, 40)}` : TERMINAL_TITLE);
   process.on('exit', () => setTerminalTitle(''));
   // On a capable terminal the input box and status line are pinned to the
   // bottom (screen.ts); otherwise a plain readline prompt follows the output.
@@ -406,7 +410,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     if (fromIde?.note) console.log(c.gray(`  ${fromIde.note}`));
     if (attached.length) console.log(c.gray(`  ⎿  attached ${attached.join(', ')}`));
     if (skipped.length) console.log(c.yellow(`  ⎿  too big to attach: ${skipped.join(', ')} — name lines, e.g. @file#L1-200`));
-    if (!session.title || session.title === '(untitled)') { session.title = titleFrom(text); session.titleSource = 'prompt'; }
+    if (!session.title || session.title === '(untitled)') { session.title = titleFrom(text); session.titleSource = 'prompt'; showTitle(); }
     current = new AbortController();
     renderer.beginTurn();
     renderer.thinking();
@@ -474,6 +478,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       if (!title || session !== target || target.titleSource === 'user') return;
       target.title = title;
       target.titleSource = 'ai';
+      showTitle();
       if (!current) persist();
     }, () => { /* the first-line title stays */ });
   };
@@ -669,6 +674,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     // carry it itself.
     const mode = permissions.mode;
     const prefix = screen.enabled || mode === 'default' ? '' : `${modeColor(mode, mode === 'acceptEdits' ? 'accept-edits' : mode)} `;
+    showTitle();
     const answer = await input.ask(screen.enabled ? `${c.bold('❯')} ` : `${prefix}${c.accent('>')} `, {
       placeholder: agent.messages.length === 0 ? 'Try "explain how this project is structured"' : 'Ask KEDTec anything',
     });

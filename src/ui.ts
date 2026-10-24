@@ -54,9 +54,14 @@ export function userBar(s: string): string {
 // "node". OSC 0 sets it; an empty one hands the tab back to the process name.
 export const TERMINAL_TITLE = '✳ KEDTec';
 
+// stdout's own write, taken before screen.ts sends stdout into its transcript —
+// which keeps text, not escape codes — so a title set while the full-screen
+// view is up still reaches the terminal.
+const writeRaw = process.stdout.write.bind(process.stdout);
+
 export function setTerminalTitle(title: string): void {
   if (!process.stdout.isTTY || process.env.TERM === 'dumb') return;
-  process.stdout.write(`\x1b]0;${title.replace(/[\x00-\x1f\x7f]/g, '')}\x07`);
+  writeRaw(`\x1b]0;${title.replace(/[\x00-\x1f\x7f]/g, '')}\x07`);
 }
 
 export function columns(): number {
