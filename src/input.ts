@@ -58,6 +58,31 @@ export function keyStream(): NodeJS.ReadableStream {
   return filtered ?? process.stdin;
 }
 
+// Stop reading stdin, then set raw mode to `raw` (off by default) — in that
+// order. On Windows libuv restarts a read that is under way whenever the
+// console mode changes, and a read in cooked mode is a ReadConsole call on a
+// thread of its own that only Enter ends. pause() stops reading a tick late, so
+// `setRawMode(false); pause()` started one of those reads and then had to
+// cancel it, and a cancel that missed left the terminal deaf to keys until
+// Enter was pressed. With the read stopped first, nothing is reading when the
+// mode changes.
+export function releaseInput(raw = false): void {
+  const stdin = process.stdin as NodeJS.ReadStream & {
+    _handle?: { reading?: boolean; readStop?: () => number };
+    _readableState?: { reading: boolean };
+  };
+  stdin.pause();
+  if (!stdin.isTTY) return;
+  // What Node does itself on the tick after pause(), done now.
+  const handle = stdin._handle;
+  if (handle?.reading && handle.readStop) {
+    handle.reading = false;
+    if (stdin._readableState) stdin._readableState.reading = false;
+    handle.readStop();
+  }
+  stdin.setRawMode(raw);
+}
+
 // A cursor position report is on its way; the filter swallows it.
 export function expectReport(): void {
   reportsExpected++;
@@ -213,8 +238,7 @@ export function select(
       keys.off('keypress', onKey);
       // Back to the title's first row, then erase from there to the end.
       if (transient) process.stdout.write(`\x1b[${titleLines + options.length + footerLines}A\r\x1b[J`);
-      if (stdin.isTTY) stdin.setRawMode(wasRaw);
-      stdin.pause();
+      releaseInput(wasRaw);
       resolve(value);
     };
     const onKey = (str: string | undefined, key: { name?: string; ctrl?: boolean } | undefined) => {
@@ -336,8 +360,7 @@ export function questionForm(questions: Question[]): Promise<QuestionAnswers> {
     const done = (result: QuestionAnswers) => {
       keys.off('keypress', onKey);
       erase();
-      if (stdin.isTTY) stdin.setRawMode(wasRaw);
-      stdin.pause();
+      releaseInput(wasRaw);
       resolve(result);
     };
     const switchTab = (delta: number) => {
@@ -428,8 +451,7 @@ export function tabbedPanel(title: string, tabs: PanelTab[]): Promise<void> {
       if (name === 'escape' || name === 'return' || name === 'enter' || str === 'q' || (key?.ctrl && name === 'c')) {
         keys.off('keypress', onKey);
         erase();
-        if (stdin.isTTY) stdin.setRawMode(wasRaw);
-        stdin.pause();
+        releaseInput(wasRaw);
         return resolve();
       }
       if (name === 'left' || (name === 'tab' && key?.shift)) idx = (idx - 1 + tabs.length) % tabs.length;
@@ -472,8 +494,7 @@ export class TurnKeys {
     if (!this.active) return;
     this.active = false;
     keyStream().off('data', this.onData);
-    process.stdin.setRawMode(false);
-    process.stdin.pause();
+    releaseInput();
   }
 
   // For a permission prompt in the middle of a turn, which needs the keys itself.

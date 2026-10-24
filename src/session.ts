@@ -19,10 +19,16 @@ export interface SessionFile {
   usage: { prompt: number; completion: number };
 }
 
-function projectDir(root: string): string {
+// "kedtec-1a2b3c4d": readable, and unique per absolute path. Memory (memory.ts)
+// uses the same key, so a project's sessions and memory are easy to match up.
+export function projectKey(root: string): string {
   const slug = path.basename(root).replace(/[^\w.-]+/g, '_').slice(0, 40) || 'root';
   const hash = crypto.createHash('sha1').update(path.resolve(root)).digest('hex').slice(0, 8);
-  return path.join(SESSIONS_DIR, `${slug}-${hash}`);
+  return `${slug}-${hash}`;
+}
+
+function projectDir(root: string): string {
+  return path.join(SESSIONS_DIR, projectKey(root));
 }
 
 export function newSessionId(): string {

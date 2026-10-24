@@ -9,6 +9,7 @@ import {
   saveCustomModel, writeStoredConfig,
 } from './config';
 import { LineInput, select } from './input';
+import { memoryDir } from './memory';
 import { Permissions } from './permissions';
 import { buildSystemPrompt, findGitRoot } from './prompt';
 import { TerminalRenderer } from './render';
@@ -316,6 +317,8 @@ async function main(): Promise<void> {
   const clientFor = (info: ModelInfo | undefined) => (info?.endpoint ? createClient(info.endpoint, resolveKey(info.apiKey) ?? '') : client);
   const projectAllowed = args.projectConfig ? readProjectAllowedCommands(findGitRoot(root) ?? root) : [];
   const permissions = new Permissions(cfg.permissionMode, [...cfg.allowedCommands, ...projectAllowed], null);
+  // Off with --no-project-config, like the project's instruction files.
+  const memDir = args.projectConfig ? memoryDir(findGitRoot(root) ?? root) : undefined;
 
   let session: SessionFile = {
     id: newSessionId(), root, model: startModel, title: '', created: new Date().toISOString(), updated: new Date().toISOString(),
@@ -336,7 +339,10 @@ async function main(): Promise<void> {
     temperature: cfg.temperature,
     maxTurns: args.maxTurns,
     contextWindow: models.find(m => m.id === startModel)?.contextWindow,
-    systemPrompt: (): string => buildSystemPrompt({ root, mode: permissions.mode, model: agent.opts.model, nonInteractive: printMode, projectConfig: args.projectConfig }),
+    memoryDir: memDir,
+    systemPrompt: (): string => buildSystemPrompt({
+      root, mode: permissions.mode, model: agent.opts.model, nonInteractive: printMode, projectConfig: args.projectConfig, memoryDir: memDir,
+    }),
   });
   agent.messages = session.messages;
   agent.usage = session.usage ?? { prompt: 0, completion: 0 };

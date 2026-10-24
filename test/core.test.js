@@ -264,6 +264,17 @@ test('commands never see the API key the CLI authenticates with', async () => {
   }
 });
 
+test('runShell: a process left running in the background does not hold the call', async () => {
+  if (process.platform === 'win32') return;
+  const { runShell } = require('../dist/tools');
+  const started = Date.now();
+  const res = await runShell('echo started; sleep 30 &', os.tmpdir(), 60_000, new AbortController().signal);
+  assert.ok(Date.now() - started < 10_000, `took ${Date.now() - started}ms`);
+  assert.strictEqual(res.code, 0);
+  assert.match(res.output, /^started\n/);
+  assert.match(res.output, /still running in the background/);
+});
+
 test('--no-project-config: the project instruction files are not read', () => {
   const { loadInstructions } = require('../dist/prompt');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kedtec-instr-'));
@@ -627,4 +638,58 @@ test('ide: a selection already pasted into the message is not sent again', () =>
   assert.strictEqual(pasted.note, '');
   const typed = new IdeContext('/p').forMessage(state, ['something else']);
   assert.ok(typed.text.includes('<ide_selection file="notes.md" lines="1-2">'));
+});
+
+test('memory: saved notes round-trip, keep an index, and refuse names that are paths', () => {
+  const { saveMemory, readMemory, listMemories, deleteMemory, isMemoryName, parseMemory, formatMemory } = require('../dist/memory');
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kedtec-memory-')), 'mem');
+  assert.strictEqual(saveMemory(dir, { name: 'project-structure', description: 'layout\nand commands', type: 'project', body: '# Layout\n- src/' }), 'created');
+  assert.strictEqual(saveMemory(dir, { name: 'project-structure', description: 'layout and commands', type: 'project', body: '# Layout\n- src/\n- test/' }), 'updated');
+  saveMemory(dir, { name: 'prefers-pnpm', description: 'use pnpm, not npm', type: 'feedback', body: 'Use pnpm.' });
+  const m = readMemory(dir, 'project-structure');
+  assert.strictEqual(m.description, 'layout and commands');
+  assert.strictEqual(m.body, '# Layout\n- src/\n- test/');
+  assert.strictEqual(listMemories(dir).length, 2);
+  const index = fs.readFileSync(path.join(dir, 'MEMORY.md'), 'utf8');
+  assert.ok(index.includes('- [prefers-pnpm](prefers-pnpm.md) (feedback) — use pnpm, not npm'));
+  assert.ok(deleteMemory(dir, 'prefers-pnpm'));
+  assert.ok(!fs.readFileSync(path.join(dir, 'MEMORY.md'), 'utf8').includes('prefers-pnpm'));
+  for (const bad of ['../x', 'a/b', 'Upper', '', '-lead', 'MEMORY', 'memory']) assert.ok(!isMemoryName(bad), bad);
+  assert.strictEqual(readMemory(dir, '../../etc/passwd'), undefined);
+  const parsed = parseMemory(formatMemory({ name: 'x', description: 'd', type: 'nonsense', body: 'b' }), 'x');
+  assert.strictEqual(parsed.type, 'project');
+  fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+});
+
+test('memory: the prompt asks to map the project first, then carries the map', () => {
+  const { memoryPrompt, saveMemory } = require('../dist/memory');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kedtec-memory-'));
+  assert.ok(memoryPrompt(dir, true).includes('Before you work on the user\'s first request here'));
+  assert.ok(!memoryPrompt(dir, false).includes('Before you work on the user\'s first request here'));
+  saveMemory(dir, { name: 'project-structure', description: 'map', type: 'project', body: 'Entry point: src/cli.ts' });
+  saveMemory(dir, { name: 'api-notes', description: 'where the API lives', type: 'reference', body: 'x' });
+  const prompt = memoryPrompt(dir, true);
+  assert.ok(prompt.includes('Entry point: src/cli.ts'));
+  assert.ok(!prompt.includes('Before you work on the user\'s first request here'));
+  assert.ok(prompt.includes('[api-notes](api-notes.md)'));
+  assert.ok(!prompt.includes('[project-structure]'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('memory tool: saves and reads through the tool, and is off without a memory folder', async () => {
+  const memory = TOOLS.find(t => t.name === 'memory');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kedtec-memory-'));
+  const ctx = { root: dir, permissions: new Permissions('plan', [], null), readState: new Map(), todos: [], status() {}, memoryDir: path.join(dir, 'm') };
+  assert.ok((await memory.run({ action: 'save', name: 'Bad Name', content: 'x' }, ctx)).isError);
+  assert.ok((await memory.run({ action: 'save', name: 'build', content: '' }, ctx)).isError);
+  assert.ok((await memory.run({ action: 'save', name: 'build', content: 'x'.repeat(20_000) }, ctx)).isError);
+  const saved = await memory.run({ action: 'save', name: 'build', description: 'how to build', type: 'project', content: 'npm run compile' }, ctx);
+  assert.ok(!saved.isError, saved.content);
+  assert.ok((await memory.run({ action: 'read', name: 'build' }, ctx)).content.includes('npm run compile'));
+  assert.ok((await memory.run({ action: 'list' }, ctx)).content.includes('build (project'));
+  assert.ok(!(await memory.run({ action: 'delete', name: 'build' }, ctx)).isError);
+  assert.ok((await memory.run({ action: 'read', name: 'build' }, ctx)).isError);
+  const off = await memory.run({ action: 'list' }, { ...ctx, memoryDir: undefined });
+  assert.ok(off.isError && off.content.includes('--no-project-config'));
+  fs.rmSync(dir, { recursive: true, force: true });
 });

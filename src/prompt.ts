@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { HOME_DIR, PermissionMode } from './config';
+import { memoryPrompt } from './memory';
 import { shellDescription } from './shell';
 
 // The instruction files a project may carry, in the order they are looked for
@@ -160,7 +161,7 @@ const MODE_TEXT: Record<PermissionMode, string> = {
   plan: 'Mode: PLAN (read-only). write_file and edit_file are blocked and run_command only runs commands that provably read inside the project. Investigate, then deliver a concrete plan: what you found (with file:line references) and each file you would create or change and how. Do not paste whole files. End by telling the user to switch modes (/mode) so you can apply it.',
 };
 
-export function buildSystemPrompt(opts: { root: string; mode: PermissionMode; model: string; nonInteractive: boolean; projectConfig: boolean }): string {
+export function buildSystemPrompt(opts: { root: string; mode: PermissionMode; model: string; nonInteractive: boolean; projectConfig: boolean; memoryDir?: string }): string {
   const parts = [BASE_PROMPT];
   const branch = gitBranch(opts.root);
   parts.push([
@@ -187,5 +188,6 @@ export function buildSystemPrompt(opts: { root: string; mode: PermissionMode; mo
     });
     parts.push(`# Project instructions\nThese files were written by the user and the project's maintainers. Follow them; they override the defaults above.\n\n${blocks.join('\n\n')}`);
   }
+  if (opts.memoryDir) parts.push(memoryPrompt(opts.memoryDir, !opts.nonInteractive));
   return parts.join('\n\n');
 }

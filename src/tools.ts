@@ -5,6 +5,9 @@ import * as path from 'path';
 import { ToolSchema } from './client';
 import { additionsOnly, unifiedDiff } from './diff';
 import { IgnoreMatcher, loadIgnoreMatcher } from './ignore';
+import {
+  MAX_MEMORY_CHARS, MEMORY_TYPES, deleteMemory, formatMemory, isMemoryName, listMemories, normalizeType, readMemory, saveMemory,
+} from './memory';
 import { isPasteFile } from './pastes';
 import { Permissions } from './permissions';
 import { commandPrefix } from './permissions';
@@ -45,6 +48,9 @@ export interface ToolContext {
   // Puts questions to the person, all at once. Absent when nobody is there to
   // answer (print mode).
   ask?(questions: Question[]): Promise<QuestionAnswers>;
+  // This project's memory folder (memory.ts). Absent with --no-project-config:
+  // a checkout nobody vouched for must not leave notes the next session trusts.
+  memoryDir?: string;
 }
 
 export interface ToolOutcome {
@@ -521,6 +527,9 @@ export function commandEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Process
   return out;
 }
 
+const EXIT_DRAIN_MS = 1000;
+const KILL_GRACE_MS = 5000;
+
 export function runShell(command: string, cwd: string, timeoutMs: number, signal: AbortSignal): Promise<{ output: string; code: number | null; timedOut: boolean; interrupted: boolean }> {
   return new Promise(resolve => {
     const sh = currentShell();
@@ -553,15 +562,34 @@ export function runShell(command: string, cwd: string, timeoutMs: number, signal
       try { if (detached && child.pid) process.kill(-child.pid, 'SIGTERM'); else child.kill('SIGTERM'); } catch { /* already gone */ }
       setTimeout(() => { try { if (detached && child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } }, 2000).unref();
     };
-    const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
-    const onAbort = () => { interrupted = true; kill(); };
-    signal.addEventListener('abort', onAbort, { once: true });
-    child.on('error', err => { output += `\n${err.message}`; });
-    child.on('close', code => {
+    let settled = false;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
       resolve({ output, code, timedOut, interrupted });
-    });
+    };
+    // A process the command left running (`npm run dev &`) holds the output
+    // pipes open, and 'close' waits for them, so the call would last as long as
+    // that process. Once the shell itself has exited, its output gets a moment
+    // to drain and then the pipes are let go. On Windows this is also the only
+    // way out: taskkill /T cannot find a process whose parent shell is gone.
+    const release = (code: number | null) => setTimeout(() => {
+      if (settled) return;
+      output += '\n(a process it started is still running in the background; its further output is not captured)';
+      child.stdout.destroy();
+      child.stderr.destroy();
+      finish(code);
+    }, EXIT_DRAIN_MS).unref();
+    // A shell that does not die when told to must not hold the agent either.
+    const stop = () => { kill(); setTimeout(() => finish(null), KILL_GRACE_MS).unref(); };
+    const timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
+    const onAbort = () => { interrupted = true; stop(); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    child.on('error', err => { output += `\n${err.message}`; });
+    child.on('exit', code => release(code));
+    child.on('close', code => finish(code));
   });
 }
 
@@ -750,6 +778,61 @@ const askUser: Tool = {
   },
 };
 
+// The agent's own notes, outside the project: no approval, and allowed in Plan
+// mode, since nothing in the checkout changes.
+const memoryTool: Tool = {
+  name: 'memory',
+  label: 'Memory',
+  readOnly: true,
+  description: 'Keep notes about this project that last across sessions: its structure, how to build and test it, decisions and preferences the user explained. '
+    + 'action "save" creates or replaces a memory (name, description, type, content); "read" returns one; "list" lists them all; "delete" removes one. '
+    + 'The "project-structure" memory and the list of the others are already in your instructions each session, so read only the others, and only when relevant.',
+  parameters: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['save', 'read', 'list', 'delete'] },
+      name: { type: 'string', description: 'kebab-case, e.g. "project-structure", "test-database-setup". Required except for list.' },
+      description: { type: 'string', description: 'save: one line saying what the memory holds, used to decide later whether to read it.' },
+      type: { type: 'string', enum: [...MEMORY_TYPES], description: 'save: project (the codebase and the work), user (who the user is), feedback (how to work, with the reason), reference (where something external lives).' },
+      content: { type: 'string', description: `save: the memory in Markdown, at most ${MAX_MEMORY_CHARS.toLocaleString('en-US')} characters.` },
+    },
+    required: ['action'],
+  },
+  summary: input => [input.action, input.name].filter(s => typeof s === 'string' && s).join(' '),
+  async run(input, ctx) {
+    const dir = ctx.memoryDir;
+    if (!dir) return fail('Memory is off in this run (--no-project-config). Do not try to save notes.');
+    const action = input.action;
+    if (action === 'list') {
+      const all = listMemories(dir);
+      if (all.length === 0) return { content: 'No memories saved for this project yet.', display: 'No memories' };
+      return {
+        content: all.map(m => `- ${m.name} (${m.type}, ${m.updated.toISOString().slice(0, 10)}) — ${m.description}`).join('\n'),
+        display: `${all.length} ${all.length === 1 ? 'memory' : 'memories'}`,
+      };
+    }
+    const name = input.name;
+    if (!isMemoryName(name)) return fail('memory needs "name" in kebab-case: lower-case letters, digits and hyphens, e.g. "project-structure".');
+    if (action === 'read') {
+      const m = readMemory(dir, name);
+      if (!m) return fail(`No memory named "${name}". Use action "list" to see them.`);
+      return { content: formatMemory(m), display: `${countLines(m.body)} lines` };
+    }
+    if (action === 'delete') {
+      return deleteMemory(dir, name) ? { content: `Deleted memory "${name}".`, display: 'Deleted' } : fail(`No memory named "${name}".`);
+    }
+    if (action !== 'save') return fail('memory needs "action": one of save, read, list, delete.');
+    const content = typeof input.content === 'string' ? input.content.trim() : '';
+    if (!content) return fail('memory save needs "content".');
+    if (content.length > MAX_MEMORY_CHARS) {
+      return fail(`The memory is ${content.length.toLocaleString('en-US')} characters; keep it under ${MAX_MEMORY_CHARS.toLocaleString('en-US')}. Cut detail that the code shows anyway, or split it by topic.`);
+    }
+    const description = typeof input.description === 'string' ? input.description : '';
+    const result = saveMemory(dir, { name, description, type: normalizeType(input.type), body: content });
+    return { content: `Memory "${name}" ${result}.`, display: `${result === 'created' ? 'Saved' : 'Updated'} · ${countLines(content)} lines` };
+  },
+};
+
 // A reply that ends by asking in prose what ask_user should have asked:
 //
 //   Would you like me to:                       ← the lead: asks, ends in ":" or "?"
@@ -807,7 +890,7 @@ export function questionsInProse(text: string): Question[] | null {
   return [{ question, options }];
 }
 
-export const TOOLS: Tool[] = [readFile, writeFile, editFile, listDir, globFiles, grepFiles, runCommand, todoWrite, askUser];
+export const TOOLS: Tool[] = [readFile, writeFile, editFile, listDir, globFiles, grepFiles, runCommand, todoWrite, askUser, memoryTool];
 
 export function toolSchemas(tools: Tool[]): ToolSchema[] {
   return tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));

@@ -37,6 +37,8 @@ export interface AgentOptions {
   contextWindow?: number;
   // How ask_user reaches the person; without it the tool is not offered.
   ask?: (questions: Question[]) => Promise<QuestionAnswers>;
+  // The project's memory folder; without it the memory tool is not offered.
+  memoryDir?: string;
 }
 
 // How many times a reply cut off by max_tokens is asked to carry on before the
@@ -55,7 +57,7 @@ export class Agent {
   constructor(public opts: AgentOptions) {}
 
   private schemas() {
-    return toolSchemas(this.opts.ask ? TOOLS : TOOLS.filter(t => t.name !== 'ask_user'));
+    return toolSchemas(TOOLS.filter(t => (t.name !== 'ask_user' || this.opts.ask) && (t.name !== 'memory' || this.opts.memoryDir)));
   }
 
   async run(input: string | ContentPart[], events: AgentEvents, signal: AbortSignal): Promise<RunResult> {
@@ -170,6 +172,7 @@ export class Agent {
         signal,
         status: label => events.status(label),
         ask: this.opts.ask,
+        memoryDir: this.opts.memoryDir,
       });
     } catch (err) {
       outcome = { content: `The tool failed: ${describeError(err)}`, isError: true };

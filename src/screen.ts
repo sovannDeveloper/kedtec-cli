@@ -1,7 +1,7 @@
 import * as readline from 'readline';
 import { ImageAttachment, clipboardImage, imageFromFile, pastedImagePaths } from './images';
 import { PastedText, isLongPaste, pasteTag, savePaste } from './pastes';
-import { AskResult, HISTORY_SIZE, Prompter, expectReport, installInputFilter, keyStream, loadHistory, saveHistory } from './input';
+import { AskResult, HISTORY_SIZE, Prompter, expectReport, installInputFilter, keyStream, loadHistory, releaseInput, saveHistory } from './input';
 import { c, stripAnsi } from './ui';
 
 // The interactive screen, full-screen like an editor: the conversation in a
@@ -296,8 +296,10 @@ export class Screen implements Prompter {
       const done = (v: { rows: number; cols: number } | null) => {
         if (timer) clearTimeout(timer);
         stdin.off('data', onData);
-        if (!wasRaw) stdin.setRawMode(false);
-        if (wasPaused) stdin.pause();
+        // At start-up this is a raw read being turned back into a paused,
+        // cooked stdin: the read stops before the mode changes (releaseInput).
+        if (wasPaused) releaseInput(wasRaw);
+        else if (!wasRaw) stdin.setRawMode(false);
         resolve(v);
       };
       const onData = (d: Buffer) => {
@@ -639,8 +641,7 @@ export class Screen implements Prompter {
         this.closeSuggestions();
         keys.off('keypress', onKey);
         this.rawWrite('\x1b[?2004l');
-        stdin.setRawMode(false);
-        stdin.pause();
+        releaseInput();
         if (result.kind === 'line' && useHistory && result.text.trim()) {
           this.history = [result.text, ...this.history.filter(h => h !== result.text)].slice(0, HISTORY_SIZE);
           saveHistory(this.history);

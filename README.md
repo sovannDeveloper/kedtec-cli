@@ -66,6 +66,7 @@ Print mode (`-p`, CI) never asks.
 | `/compact [focus]` | summarise the conversation to free context (also automatic near the limit) |
 | `/clear` · `/resume` | new conversation · reopen an earlier one |
 | `/init` | have the agent write a `KEDTEC.md` for the project |
+| `/memory` · `/memory refresh` · `/memory forget <name>` | list what the agent remembers about this project · re-learn its structure now · drop one memory |
 | `/todos` · `/cost` · `/status` | checklist · token usage · configuration |
 | `!npm test` | run a command yourself; the output joins the conversation |
 | `@src/app.ts` | attach a file to your message |
@@ -176,6 +177,29 @@ down to the current directory, plus `~/.kedtec/KEDTEC.md`, into its system
 prompt. Very large files are truncated (40 KB each, 80 KB total), and the model
 is told it can read the rest.
 
+## Project memory
+
+The agent keeps notes about each project that carry over between sessions, in
+`~/.kedtec/memory/<project>/`: one Markdown file per memory plus a `MEMORY.md`
+index. They live outside the checkout, so they never show up in `git status`.
+
+The first time you ask it something in a project, the agent maps the project
+before it starts: README, manifests, top-level folders and entry points, and
+the build, run and test commands. It saves that as the `project-structure`
+memory. Every later session starts with that memory in its system prompt, plus
+a one-line index of the other memories, so the agent does not re-explore. It
+saves other memories as it learns things the code does not show: decisions you
+explain, how you want it to work, and where something external lives. It
+updates `project-structure` when the layout changes.
+
+Writing a memory needs no approval and works in Plan mode, since nothing in the
+project changes. Sessions started in a subfolder share the git root's memory.
+`/memory` lists the memories, `/memory refresh` rebuilds `project-structure`
+now, and `/memory forget <name>` deletes one. The files are plain Markdown, so
+you can also edit or delete them by hand. With `--no-project-config`, memory is
+neither read nor written. In print mode the agent does not map the project
+first, but it saves what a task taught it.
+
 ## CI / scripting (print mode)
 
 `-p` runs one task and prints only the final answer on stdout. Piped stdin is
@@ -206,8 +230,8 @@ Exit codes: `0` success, `1` error (including `--max-turns` reached), `130` inte
 See [examples/github-actions.yml](examples/github-actions.yml) for a pull-request review job.
 
 When the checkout is not yours to trust — a pull request's code — pass
-`--no-project-config`: the project's `KEDTEC.md`, `CLAUDE.md`, `AGENTS.md` and
-`.kedtec/settings.json` are then ignored rather than followed (`~/.kedtec/KEDTEC.md`
+`--no-project-config`: the project's `KEDTEC.md`, `CLAUDE.md`, `AGENTS.md`,
+`.kedtec/settings.json` and project memory are then ignored rather than followed (`~/.kedtec/KEDTEC.md`
 still applies). Commands the agent runs never see the API key: `KEDTEC_API_KEY` is
 removed from their environment, and so is `OPENAI_API_KEY` when that is where the
 key came from.

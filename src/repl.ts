@@ -10,6 +10,7 @@ import {
 import { ImageAttachment, dataUrl, imageFromFile, isImagePath } from './images';
 import { PastedText, withPastes } from './pastes';
 import { LineInput, PanelTab, Prompter, TurnKeys, questionForm, select, tabbedPanel } from './input';
+import { STRUCTURE_MEMORY, deleteMemory, isMemoryName, listMemories } from './memory';
 import { Asker, PermissionRequest, Permissions } from './permissions';
 import { loadInstructions } from './prompt';
 import { TerminalRenderer } from './render';
@@ -70,6 +71,7 @@ const COMMANDS: { name: string; args?: string; about: string }[] = [
   { name: '/mode', args: '[name]', about: 'permission mode: default · acceptEdits · auto · plan · bypass (no name: cycle)' },
   { name: '/plan', about: 'shortcut for /mode plan' },
   { name: '/init', about: 'write a KEDTEC.md describing this project' },
+  { name: '/memory', args: '[refresh|forget name]', about: 'list what the agent remembers about this project, re-learn its structure, or drop a memory' },
   { name: '/resume', about: 'reopen an earlier conversation in this directory' },
   { name: '/todos', about: 'show the current checklist' },
   { name: '/cost', about: 'token usage this session' },
@@ -192,6 +194,9 @@ function helpTabs(fullScreen: boolean): PanelTab[] {
 const INIT_PROMPT = `Analyse this codebase and write a KEDTEC.md file at the project root for future agent sessions.
 Include: what the project is; the commands to install, build, run, lint and test (and how to run a single test); the high-level architecture and how the main pieces fit together, which needs several files read to understand; and the conventions and gotchas a newcomer would not guess.
 Do not list every file or repeat what is obvious from the tree, and do not invent anything you have not seen. If a KEDTEC.md, CLAUDE.md or AGENTS.md already exists, improve it instead of starting over. Read README files and manifests first.`;
+
+const MEMORY_REFRESH_PROMPT = `Re-learn this project's structure and update the "${STRUCTURE_MEMORY}" memory with the memory tool.
+Read the README, the manifests and any instruction files, list the top level and the main source folders, and open the entry points. Then save "${STRUCTURE_MEMORY}" (type "project"): what the project is, the commands to install, build, run and test (one test too), the main folders and what each holds, how the main pieces fit together, and the gotchas a newcomer would trip on. At most about 60 lines, only what you saw, no file-by-file listing. Correct anything in the old version that is no longer true. Reply with a few lines on what changed.`;
 
 // The KEDTec API refuses a message over 100,000 characters (a 422), so what the
 // mentions attach shares this budget, leaving room for the typed text and an
@@ -555,6 +560,23 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       case 'init':
         await send(INIT_PROMPT);
         return true;
+      case 'memory': {
+        const dir = agent.opts.memoryDir;
+        if (!dir) { console.log(c.gray('  Memory is off in this session (--no-project-config).')); return true; }
+        const [sub, name] = arg.split(/\s+/);
+        if (sub === 'refresh') { await send(MEMORY_REFRESH_PROMPT); return true; }
+        if (sub === 'forget') {
+          if (!isMemoryName(name)) { console.log(c.red('  Usage: /memory forget <name>  (names are listed by /memory)')); return true; }
+          console.log(c.gray(deleteMemory(dir, name) ? `  ⎿  Forgot "${name}".` : `  ⎿  No memory named "${name}".`));
+          return true;
+        }
+        if (sub) { console.log(c.red(`  Unknown /memory ${sub}. Use /memory, /memory refresh or /memory forget <name>.`)); return true; }
+        const all = listMemories(dir);
+        console.log(c.gray(`  ${dir}`));
+        if (all.length === 0) console.log(c.gray(`  No memories yet. The agent maps the project into "${STRUCTURE_MEMORY}" on your first request; /memory refresh does it now.`));
+        for (const m of all) console.log(`  ${c.accent(m.name)} ${c.gray(`${m.type} · ${m.updated.toISOString().slice(0, 10)}`)}${m.description ? ` — ${m.description}` : ''}`);
+        return true;
+      }
       case 'resume': {
         const sessions = listSessions(root).filter(s => s.id !== session.id).slice(0, 15);
         if (sessions.length === 0) { console.log(c.gray('  No earlier conversations in this directory.')); return true; }
@@ -588,6 +610,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
           `  ${c.gray('mode    ')}  ${modeColor(permissions.mode, MODE_LABEL[permissions.mode])}`,
           `  ${c.gray('root    ')}  ${root}`,
           `  ${c.gray('session ')}  ${session.id}`,
+          `  ${c.gray('memory  ')}  ${agent.opts.memoryDir ? `${listMemories(agent.opts.memoryDir).length} saved (/memory)` : 'off'}`,
           `  ${c.gray('instructions')} ${instr.length ? instr.map(f => `${displayPath(f.path, root)}${!f.truncated ? '' : f.text ? ' (truncated)' : ' (omitted)'}`).join(', ') : 'none'}`,
         ].join('\n'));
         return true;
