@@ -27,7 +27,13 @@ export const c = {
 };
 
 export function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, '');
+  return s.replace(/\x1b\[[0-9;]*[mK]/g, '');
+}
+
+// A line of a message the user sent, as a bar across the terminal: "erase to
+// end of line" paints the rest of the row in the background colour.
+export function userBar(s: string): string {
+  return colorOn ? `\x1b[48;5;237m${s} \x1b[K\x1b[49m` : s;
 }
 
 // The terminal's title — what VS Code shows on the terminal tab instead of

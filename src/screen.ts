@@ -106,9 +106,10 @@ function wrapAnsi(line: string, width: number): string[] {
   let row = '';
   let w = 0;
   let sgr = '';
-  for (const m of line.replace(/\t/g, '    ').matchAll(/(\x1b\[[0-9;]*m)|([^\x1b]+)|\x1b/g)) {
+  for (const m of line.replace(/\t/g, '    ').matchAll(/(\x1b\[[0-9;]*[mK])|([^\x1b]+)|\x1b/g)) {
     if (m[1]) {
       row += m[1];
+      if (m[1].endsWith('K')) continue;
       sgr = m[1] === '\x1b[0m' || m[1] === '\x1b[m' ? '' : sgr + m[1];
       continue;
     }
@@ -148,6 +149,9 @@ export class Transcript {
         if (m[2] === 'm') this.append(tok);
         else if (m[2] === 'A') this.cur = Math.max(0, this.cur - (Number(m[1]) || 1));
         else if (m[2] === 'K' && m[1] === '2') this.set('');
+        // Erase to end of line is kept: drawn after the text, it fills the
+        // rest of the row with the background colour (userBar in ui.ts).
+        else if (m[2] === 'K' && !m[1]) this.append(tok);
         else if (m[2] === 'J' && !m[1]) this.eraseBelow();
       } else if (tok === '\n' || tok === '\r\n') {
         this.cur++;

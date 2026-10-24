@@ -20,7 +20,7 @@ import { Completer, Screen } from './screen';
 import { loadIgnoreMatcher } from './ignore';
 import { SessionFile, listSessions, newSessionId, saveSession, titleFrom } from './session';
 import { Question, QuestionAnswers, displayPath, isInsideRoot, listProjectFiles, questionsInProse, runShell } from './tools';
-import { TERMINAL_TITLE, c, clip, colorDiff, columnLayout, columns, setTerminalTitle, stripAnsi, wrapText } from './ui';
+import { TERMINAL_TITLE, c, clip, colorDiff, columnLayout, columns, setTerminalTitle, stripAnsi, userBar, wrapText } from './ui';
 
 // Read from package.json (one level above dist/) so a version bump is a one-place edit.
 export const VERSION: string = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
@@ -638,7 +638,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   }
   if (agent.messages.length > 0) console.log(c.gray(`  Continuing "${session.title}" (${agent.messages.length} messages).\n`));
   if (opts.initialPrompt) {
-    console.log(`${c.gray('>')} ${opts.initialPrompt}`);
+    echo(opts.initialPrompt);
     await send(opts.initialPrompt);
   }
 
@@ -753,7 +753,7 @@ function rememberMode(mode: PermissionMode): void {
 
 function echo(text: string): void {
   const lines = text.split('\n');
-  console.log(`\n${c.gray('>')} ${lines[0]}${lines.slice(1).map(l => `\n  ${l}`).join('')}`);
+  console.log(`\n${lines.map((l, i) => userBar(`${i === 0 ? c.gray('❯') : ' '} ${l}`)).join('\n')}`);
 }
 
 function formatTokens(n: number): string {
