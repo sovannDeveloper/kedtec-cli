@@ -65,6 +65,7 @@ Print mode (`-p`, CI) never asks.
 | `/mode [default\|acceptEdits\|auto\|plan\|bypass]` · `/plan` | permission mode (no argument cycles) |
 | `/compact [focus]` | summarise the conversation to free context (also automatic near the limit) |
 | `/clear` · `/resume` | new conversation · reopen an earlier one |
+| `/sessions` | this workspace's saved conversations: resume, rename, delete one, or delete all (`kedtec sessions`, `kedtec sessions rm <id>` and `kedtec sessions clear` from the shell) |
 | `/init` | have the agent write a `KEDTEC.md` for the project |
 | `/memory` · `/memory refresh` · `/memory forget <name>` | list what the agent remembers about this project · re-learn its structure now · drop one memory |
 | `/todos` · `/cost` · `/status` | checklist · token usage · configuration |
@@ -149,7 +150,10 @@ Auto mode still asks before a command that deletes recursively (`rm -r`,
 writes), sends data (`curl -d`), pipes anything into a shell, acts on the
 machine or another one (`sudo`, `kill`, `brew`, global installs, `ssh`,
 `docker rm`, `kubectl apply`), uses `$(…)` substitution, or names a path
-outside the project — and says which rule it hit. The rules are fixed
+outside the project in anything but a plain read — and says which rule it hit.
+A plain read (`grep`, `cat`, `ls`, `find` … with nothing that writes or chains)
+runs unasked wherever it points, as do the read tools, except at a credential
+location (`~/.ssh`, `~/.aws`, `~/.kedtec`, `~/.netrc` and the like). The rules are fixed
 (`assessRisk` in `src/shellSafety.ts`), so the same command always gets the
 same answer. In print mode a flagged command is refused rather than asked.
 

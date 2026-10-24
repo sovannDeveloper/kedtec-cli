@@ -13,11 +13,12 @@ export interface PermissionRequest {
   warnings?: string[];
   // For commands: the prefix "always allow" would remember ("npm test").
   commandPrefix?: string;
-  // True when the target lies outside the project root — never auto-approved
-  // by acceptEdits or auto.
+  // True when the target lies outside the project root. An edit there is never
+  // auto-approved; auto mode lets a read there through.
   outsideRoot?: boolean;
-  // For commands: why auto mode should still ask (shellSafety.assessRisk), or
-  // '' / absent when it may run unasked.
+  // For commands and outside reads: why auto mode should still ask
+  // (shellSafety.assessRisk, a credential path), or '' / absent when it may
+  // run unasked.
   risk?: string;
 }
 
@@ -93,6 +94,8 @@ export class Permissions {
     // Auto mode runs every command the risk rules do not flag; a flagged one
     // falls through to the allowances and then to the person.
     if (req.kind === 'command' && this.mode === 'auto' && !req.risk) return { ok: true };
+    // So does a read outside the project, unless it is of credentials.
+    if (req.kind === 'outside' && this.mode === 'auto' && !req.risk) return { ok: true };
     if (req.kind === 'command' && req.detail) {
       const command = req.detail;
       for (const prefix of [...this.allowedCommands, ...this.sessionCommands]) {

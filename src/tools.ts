@@ -12,7 +12,7 @@ import { isPasteFile } from './pastes';
 import { Permissions } from './permissions';
 import { commandPrefix } from './permissions';
 import { currentShell, shellDescription, shellKind } from './shell';
-import { assessRisk, classifyCommand, commandReach, realPathOfNearest } from './shellSafety';
+import { assessRisk, classifyCommand, commandReach, isSecretPath, readsAnywhere, realPathOfNearest } from './shellSafety';
 import { c, clip } from './ui';
 
 // ── context ──────────────────────────────────────────────────────────────────
@@ -104,7 +104,10 @@ export function displayPath(abs: string, root: string): string {
 // A long paste's temp file (pastes.ts) is the user's own message, read freely.
 async function checkOutsideRead(abs: string, ctx: ToolContext, what: string): Promise<ToolOutcome | null> {
   if (isInsideRoot(abs, ctx.root) || (what === 'Read' && isPasteFile(abs))) return null;
-  const verdict = await ctx.permissions.check({ kind: 'outside', title: `${what} ${abs} (outside the project)`, outsideRoot: true });
+  const verdict = await ctx.permissions.check({
+    kind: 'outside', title: `${what} ${abs} (outside the project)`, outsideRoot: true,
+    risk: isSecretPath(abs) ? 'it is where credentials are kept' : '',
+  });
   return verdict.ok ? null : fail(verdict.message);
 }
 
@@ -625,7 +628,9 @@ const runCommand: Tool = {
       if (reach.unanalyzable) {
         warnings.push(shellKind() === 'cmd' ? 'Runs in cmd.exe, so the paths it reaches cannot be checked' : 'Uses substitution or quoting that cannot be analysed');
       }
-      const risk = assessRisk(command, ctx.root, ctx.root).reason;
+      // Auto mode lets a plain read through wherever it points; the risk rules
+      // would stop it only for naming a path outside the project.
+      const risk = ctx.permissions.mode === 'auto' && readsAnywhere(command, ctx.root, ctx.root) ? '' : assessRisk(command, ctx.root, ctx.root).reason;
       if (risk && ctx.permissions.mode === 'auto') warnings.push(`Auto mode paused: ${risk}`);
       const permission = await ctx.permissions.check({
         kind: 'command', title: `Run: ${clip(command, 70)}`, detail: command, warnings, commandPrefix: commandPrefix(command), risk,

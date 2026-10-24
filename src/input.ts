@@ -207,12 +207,14 @@ export class LineInput implements Prompter {
 
 // An arrow-key menu. Resolves with the chosen index, or null for Esc / ctrl+c.
 // A `title` is drawn above the options. A `transient` menu, title included, is
-// erased once answered, so the caller can print the choice in its place.
+// erased once answered, so the caller can print the choice in its place. With
+// more options than `maxVisible`, that many show at a time and the list
+// scrolls with the selection (PgUp/PgDn move a page), over a position line.
 export function select(
   options: string[],
   initial = 0,
-  { numbered = true, indent = '  ', footer, title, transient = false }:
-    { numbered?: boolean; indent?: string; footer?: string; title?: string; transient?: boolean } = {},
+  { numbered = true, indent = '  ', footer, title, transient = false, maxVisible }:
+    { numbered?: boolean; indent?: string; footer?: string; title?: string; transient?: boolean; maxVisible?: number } = {},
 ): Promise<number | null> {
   return new Promise(resolve => {
     const stdin = process.stdin;
@@ -222,22 +224,32 @@ export function select(
     if (stdin.isTTY) stdin.setRawMode(true);
     stdin.resume();
     let idx = Math.max(0, Math.min(options.length - 1, initial));
+    const page = Math.max(1, Math.min(options.length, maxVisible ?? options.length));
+    const scrolls = page < options.length;
+    let top = 0;
     // A footer sits under the options and is redrawn with them: a blank line, then the text.
     const footerLines = footer ? 2 : 0;
+    const drawn = page + (scrolls ? 1 : 0) + footerLines;
     const render = (first: boolean) => {
-      if (!first) process.stdout.write(`\x1b[${options.length + footerLines}A`);
-      options.forEach((opt, i) => {
+      if (!first) process.stdout.write(`\x1b[${drawn}A`);
+      top = Math.min(Math.max(top, idx - page + 1), idx);
+      for (let i = top; i < top + page; i++) {
+        const opt = options[i];
         const label = numbered ? `${i + 1}. ${opt}` : opt;
         const line = i === idx ? `${c.accent('❯')} ${c.accent(label)}` : numbered ? `  ${c.gray(`${i + 1}.`)} ${opt}` : `  ${opt}`;
         process.stdout.write(`\x1b[2K${indent}${line}\n`);
-      });
+      }
+      if (scrolls) {
+        const arrows = `${top > 0 ? '↑' : ' '}${top + page < options.length ? '↓' : ' '}`;
+        process.stdout.write(`\x1b[2K${indent}  ${c.gray(`${arrows} ${idx + 1} of ${options.length}`)}\n`);
+      }
       if (footer) process.stdout.write(`\x1b[2K\n\x1b[2K${indent}${footer}\n`);
     };
     const titleLines = title ? title.split('\n').length : 0;
     const done = (value: number | null) => {
       keys.off('keypress', onKey);
       // Back to the title's first row, then erase from there to the end.
-      if (transient) process.stdout.write(`\x1b[${titleLines + options.length + footerLines}A\r\x1b[J`);
+      if (transient) process.stdout.write(`\x1b[${titleLines + drawn}A\r\x1b[J`);
       releaseInput(wasRaw);
       resolve(value);
     };
@@ -245,6 +257,8 @@ export function select(
       if ((key?.ctrl && key.name === 'c') || key?.name === 'escape') return done(null);
       if (key?.name === 'up' || key?.name === 'k') idx = (idx - 1 + options.length) % options.length;
       else if (key?.name === 'down' || key?.name === 'j' || key?.name === 'tab') idx = (idx + 1) % options.length;
+      else if (key?.name === 'pageup') idx = Math.max(0, idx - page);
+      else if (key?.name === 'pagedown') idx = Math.min(options.length - 1, idx + page);
       else if (key?.name === 'return' || key?.name === 'enter') return done(idx);
       else if (str && /^[1-9]$/.test(str) && Number(str) <= options.length) return done(Number(str) - 1);
       else return;

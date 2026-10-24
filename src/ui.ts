@@ -26,6 +26,20 @@ export const c = {
   accent: wrap('38;5;30', '\x1b[39m'),
 };
 
+// The KEDTec mark, its SVG rasterised to braille (2×4 dots a cell) in its own
+// teal, #00B4B4. Empty without colour: the dots alone read as noise.
+const LOGO = [
+  '⠀⠀⣠⣶⠟⢛⢩⣥⣂⡀⠀⠀',
+  '⢠⣾⠟⠀⠀⠀⠀⠀⠈⠻⣦⡀',
+  '⣿⣿⠀⢸⡿⣀⣼⠋⠀⠀⢸⣷',
+  '⣿⣿⠀⢸⣿⠉⢻⣦⡀⠀⣸⡿',
+  '⠘⢿⣦⠀⠀⠀⠀⠀⢀⣴⠟⠁',
+  '⠀⠀⠙⠿⣦⣬⣙⡛⠍⠁⠀⠀',
+];
+export function logo(): string[] {
+  return colorOn ? LOGO.map(l => `\x1b[38;2;0;180;180m${l}\x1b[39m`) : [];
+}
+
 export function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*[mK]/g, '');
 }

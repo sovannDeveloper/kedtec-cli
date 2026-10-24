@@ -214,6 +214,25 @@ test('shell safety: a reader cannot be talked into writing, running or reaching 
   assert.strictEqual(assessRisk('npm install --registry=https://r.example.com', root, root).reason, '');
 });
 
+test('auto mode: a plain read runs unasked wherever it points, except at credentials', async () => {
+  const { readsAnywhere } = require('../dist/shellSafety');
+  const root = '/tmp/proj';
+  for (const cmd of ['grep -n "trash\\|delete" ~/.pub-cache/git/remixicon-*/lib/remixicon.dart | head -10', 'ls /usr/local/lib', 'cat ../other/README.md']) {
+    assert.ok(readsAnywhere(cmd, root, root, 'bash'), cmd);
+  }
+  for (const cmd of ['cat ~/.ssh/id_rsa', 'cat {~/.ssh/id_rsa,}', 'grep -r key ~/.aws', 'cat ~/.kedtec/config.json', 'cat $HOME/.ssh/id_rsa',
+    'rm -rf ~/x', 'cat a > ~/b', 'sort -o ~/out in', 'cat ~/a && rm b']) {
+    assert.ok(!readsAnywhere(cmd, root, root, 'bash'), cmd);
+  }
+  assert.ok(!readsAnywhere('type x', root, root, 'cmd'));
+
+  const { Permissions } = require('../dist/permissions');
+  const auto = new Permissions('auto', [], null);
+  assert.strictEqual((await auto.check({ kind: 'outside', title: 'Read /usr/x', outsideRoot: true, risk: '' })).ok, true);
+  assert.strictEqual((await auto.check({ kind: 'outside', title: 'Read ~/.ssh/x', outsideRoot: true, risk: 'credentials' })).ok, false);
+  assert.strictEqual((await new Permissions('acceptEdits', [], null).check({ kind: 'outside', title: 'Read /usr/x', outsideRoot: true, risk: '' })).ok, false);
+});
+
 test('shell safety: brace expansion is never read as one name inside the project', () => {
   const { assessRisk, classifyCommand } = require('../dist/shellSafety');
   const root = '/tmp/proj';
@@ -511,6 +530,19 @@ test('ask_user: answers, dismissal, chat, and no one to ask', async () => {
   assert.strictEqual(decodeNested({ questions: '{"a":1}' }, tool.parameters).questions, '{"a":1}');
 });
 
+test('wireSafe: a call cut off mid-arguments goes back to the model as {}', () => {
+  const { wireSafe } = require('../dist/agent');
+  const call = (id, args) => ({ id, type: 'function', function: { name: 'ask_user', arguments: args } });
+  const broken = { role: 'assistant', content: null, tool_calls: [call('a', '{"questions": '), call('b', '{"x":1}')] };
+  assert.deepStrictEqual(wireSafe(broken).tool_calls.map(t => t.function.arguments), ['{}', '{"x":1}']);
+  // The stored history keeps what the model sent.
+  assert.strictEqual(broken.tool_calls[0].function.arguments, '{"questions": ');
+  const fine = { role: 'assistant', content: null, tool_calls: [call('c', '{}')] };
+  assert.strictEqual(wireSafe(fine), fine);
+  const user = { role: 'user', content: 'hi' };
+  assert.strictEqual(wireSafe(user), user);
+});
+
 test('questionsInProse: a reply that asks in prose gets a form; a report does not', () => {
   const { questionsInProse } = require('../dist/tools');
   const offer = questionsInProse([
@@ -692,4 +724,29 @@ test('memory tool: saves and reads through the tool, and is off without a memory
   const off = await memory.run({ action: 'list' }, { ...ctx, memoryDir: undefined });
   assert.ok(off.isError && off.content.includes('--no-project-config'));
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('sessions: listed per workspace, renamed without reordering, deleted', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kedtec-home-'));
+  const out = require('child_process').execFileSync(process.execPath, ['-e', `
+    const s = require('./dist/session');
+    const make = (root, id, updated) => ({ id, root, model: 'm', title: id, created: updated, updated, messages: [{ role: 'user', content: 'hi' }], usage: { prompt: 0, completion: 0 } });
+    const fs = require('fs'), path = require('path');
+    // saveSession stamps "updated" with now, so the files are written as they are.
+    for (const x of [make('/tmp/a', 'one', '2026-01-01T00:00:00Z'), make('/tmp/b', 'two', '2026-02-01T00:00:00Z'), make('/tmp/a', 'three', '2026-03-01T00:00:00Z')]) {
+      const dir = path.join(process.env.KEDTEC_HOME, 'sessions', s.projectKey(x.root));
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, x.id + '.json'), JSON.stringify(x));
+    }
+    const a = () => s.listSessions('/tmp/a');
+    const before = a().map(x => x.id);
+    s.renameSession(a().find(x => x.id === 'one'), 'First');
+    const renamed = a().map(x => x.title);
+    const deleted = s.deleteSession(a().find(x => x.id === 'three'));
+    console.log(JSON.stringify({ before, renamed, deleted, again: s.deleteSession({ id: 'three', root: '/tmp/a' }),
+      after: a().map(x => x.id), other: s.listSessions('/tmp/b').map(x => x.id) }));
+  `], { env: { ...process.env, KEDTEC_HOME: home }, cwd: path.join(__dirname, '..'), encoding: 'utf8' });
+  assert.deepStrictEqual(JSON.parse(out), {
+    before: ['three', 'one'], renamed: ['three', 'First'], deleted: true, again: false, after: ['one'], other: ['two'],
+  });
 });

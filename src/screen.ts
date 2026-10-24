@@ -8,7 +8,7 @@ import { c, stripAnsi } from './ui';
 // view of its own, and fixed at the bottom the loading line, the input box and
 // the mode/status line. Only the conversation scrolls.
 //
-//   ╭ KEDTec CLI …                       ┐
+//   KEDTec CLI …                         ┐
 //   ● Fixed add in math.js …             │ conversation — mouse wheel, PgUp/PgDn
 //   ✻ Baked for 8s                       ┘
 //   ✻ Thinking… (4s · ↓ 1.2k tokens)     loading line (blank when idle)

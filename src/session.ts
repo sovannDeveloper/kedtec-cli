@@ -57,6 +57,16 @@ export function listSessions(root: string): SessionFile[] {
   return sessions.sort((a, b) => b.updated.localeCompare(a.updated));
 }
 
+// A new title, leaving `updated` alone: renaming is not working in it.
+export function renameSession(s: SessionFile, title: string): void {
+  s.title = title;
+  fs.writeFileSync(path.join(projectDir(s.root), `${s.id}.json`), JSON.stringify(s), { mode: 0o600 });
+}
+
+export function deleteSession(s: SessionFile): boolean {
+  try { fs.unlinkSync(path.join(projectDir(s.root), `${s.id}.json`)); return true; } catch { return false; }
+}
+
 export function loadSession(root: string, id?: string): SessionFile | undefined {
   const all = listSessions(root);
   return id ? all.find(s => s.id === id || s.id.startsWith(id)) : all[0];

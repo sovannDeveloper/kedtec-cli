@@ -352,6 +352,31 @@ export interface CommandVerdict {
  * resolve rather than against the workspace root.
  */
 export function classifyCommand(command: string, cwd: string, root: string, shell: ShellKind = shellKind()): CommandVerdict {
+  return classify(command, cwd, root, shell, true);
+}
+
+// Where credentials live. A read of one is never let through unasked, inside
+// or out: what is read goes to the model. Best effort — a glob such as
+// `~/.s*` is not expanded here.
+const SECRET_PATH = /(^|[\\/])(\.ssh|\.gnupg|\.aws|\.azure|\.kube|\.docker|\.netrc|\.npmrc|\.pypirc|\.git-credentials|\.kedtec|\.config[\\/](gh|gcloud))([\\/]|$)/i;
+
+export function isSecretPath(p: string): boolean {
+  return SECRET_PATH.test(p);
+}
+
+/**
+ * Whether `command` is provably a read, wherever the paths it names point —
+ * `classifyCommand` without the "stays in the workspace" part. Auto mode runs
+ * such a command unasked (`grep foo ~/.pub-cache/…`), except where it names a
+ * credential location.
+ */
+export function readsAnywhere(command: string, cwd: string, root: string, shell: ShellKind = shellKind()): boolean {
+  if (!classify(command, cwd, root, shell, false).readOnly) return false;
+  const items = tokenizeCommand((command ?? '').trim()) ?? [];
+  return !items.some(it => it.kind === 'word' && isSecretPath(pathPart(it.text) ?? ''));
+}
+
+function classify(command: string, cwd: string, root: string, shell: ShellKind, contained: boolean): CommandVerdict {
   const text = (command ?? '').trim();
   if (!text) return { readOnly: false, reason: 'empty command' };
   if (shell === 'cmd') return { readOnly: false, reason: CMD_REASON };
@@ -421,7 +446,7 @@ export function classifyCommand(command: string, cwd: string, root: string, shel
     // pattern that happens to start with `/` is a regex — but it is also
     // indistinguishable from a path here, so it is checked like one and a
     // rooted pattern costs a confirmation rather than being trusted.
-    for (const a of args) {
+    for (const a of contained ? args : []) {
       const p = pathPart(a.text);
       if (p === null) continue;
       if (!argStaysInside(p, cwd, root)) {

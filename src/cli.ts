@@ -14,7 +14,7 @@ import { Permissions } from './permissions';
 import { buildSystemPrompt, findGitRoot } from './prompt';
 import { TerminalRenderer } from './render';
 import { VERSION, askCustomModel, customTag, runRepl } from './repl';
-import { SessionFile, listSessions, loadSession, newSessionId, saveSession, titleFrom } from './session';
+import { SessionFile, deleteSession, listSessions, loadSession, newSessionId, saveSession, titleFrom } from './session';
 import { confirmTrust } from './trust';
 import { c, clip, setColor } from './ui';
 
@@ -28,6 +28,8 @@ ${c.bold('Usage')}
   kedtec models add | remove <id>  add a custom model (any OpenAI-compatible endpoint), or remove one
   kedtec config [set|unset] …      show or change settings (${CONFIG_FILE})
   kedtec sessions                  list saved conversations for this directory
+  kedtec sessions rm <id>          delete one of them
+  kedtec sessions clear            delete all of them
 
 ${c.bold('Options')}
   -p, --print                      non-interactive: answer, then exit
@@ -277,9 +279,30 @@ async function main(): Promise<void> {
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) die(`not a directory: ${root}`);
 
   if (!args.print && sub === 'sessions') {
+    const op = args.positional[1];
     const sessions = listSessions(root);
+    const plural = (n: number) => `${n} conversation${n === 1 ? '' : 's'}`;
+    if (op === 'rm' || op === 'delete') {
+      const id = args.positional[2];
+      if (!id) die('usage: kedtec sessions rm <id>  (ids are listed by kedtec sessions)');
+      const matches = sessions.filter(s => s.id === id || s.id.startsWith(id));
+      if (matches.length !== 1) die(matches.length ? `"${id}" matches ${matches.length} conversations; give more of the id` : `no saved conversation "${id}" in this directory`);
+      if (!deleteSession(matches[0])) die(`could not delete "${matches[0].id}"`);
+      console.log(`Deleted "${matches[0].title}" (${matches[0].id}).`);
+      return;
+    }
+    if (op === 'clear') {
+      if (sessions.length === 0) { console.log(c.gray('No saved conversations for this directory.')); return; }
+      if (!process.stdin.isTTY) die('kedtec sessions clear asks for confirmation, so it needs a terminal');
+      const sure = await select(['No, keep them', `Yes, delete ${plural(sessions.length)}`], 0,
+        { title: c.yellow(`Delete this directory's ${plural(sessions.length)}? It cannot be undone.`) });
+      if (sure !== 1) return;
+      console.log(`Deleted ${sessions.filter(deleteSession).length} of ${plural(sessions.length)}.`);
+      return;
+    }
+    if (op) die(`unknown "sessions ${op}"; use kedtec sessions, kedtec sessions rm <id> or kedtec sessions clear`);
     if (sessions.length === 0) console.log(c.gray('No saved conversations for this directory.'));
-    for (const s of sessions.slice(0, 30)) console.log(`${c.accent(s.id)}  ${clip(s.title, 50)}  ${c.gray(`${s.updated.slice(0, 16).replace('T', ' ')} · ${s.messages.length} msgs`)}`);
+    for (const s of sessions) console.log(`${c.accent(s.id)}  ${clip(s.title, 50)}  ${c.gray(`${s.updated.slice(0, 16).replace('T', ' ')} · ${s.messages.length} msgs`)}`);
     return;
   }
 

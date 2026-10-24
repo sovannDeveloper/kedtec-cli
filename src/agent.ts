@@ -77,7 +77,7 @@ export class Agent {
       try {
         result = await streamTurn(this.opts.client, {
           model: this.opts.model,
-          messages: [{ role: 'system', content: this.opts.systemPrompt() }, ...this.messages],
+          messages: [{ role: 'system', content: this.opts.systemPrompt() }, ...this.messages.map(wireSafe)],
           tools: this.schemas(),
           maxTokens: this.opts.maxTokens,
           temperature: this.opts.temperature,
@@ -250,6 +250,22 @@ export function decodeNested(input: Record<string, unknown>, schema: Record<stri
     }
   }
   return out;
+}
+
+// The message as sent back to the model. Arguments that are not valid JSON (a
+// call cut off mid-stream) go as "{}": backends parse them, and one broken
+// call left in the history would fail every request after it with a 400. The
+// tool result beside it already says what went wrong.
+export function wireSafe(m: ChatMessage): ChatMessage {
+  if (m.role !== 'assistant' || !m.tool_calls?.some(t => !isJson(t.function.arguments))) return m;
+  return {
+    ...m,
+    tool_calls: m.tool_calls.map(t => (isJson(t.function.arguments) ? t : { ...t, function: { ...t.function, arguments: '{}' } })),
+  };
+}
+
+function isJson(s: string): boolean {
+  try { JSON.parse(s); return true; } catch { return false; }
 }
 
 function clipText(s: string, n: number): string {

@@ -18,9 +18,9 @@ import { IdeContext, IdeWatcher, ideLabel } from './ide';
 import { ensureIdeBridge } from './ideBridge';
 import { Completer, Screen } from './screen';
 import { loadIgnoreMatcher } from './ignore';
-import { SessionFile, listSessions, newSessionId, saveSession, titleFrom } from './session';
+import { SessionFile, deleteSession, listSessions, newSessionId, renameSession, saveSession, titleFrom } from './session';
 import { Question, QuestionAnswers, displayPath, isInsideRoot, listProjectFiles, questionsInProse, runShell } from './tools';
-import { TERMINAL_TITLE, c, clip, colorDiff, columnLayout, columns, setTerminalTitle, stripAnsi, userBar, wrapText } from './ui';
+import { TERMINAL_TITLE, c, clip, colorDiff, columnLayout, columns, logo, setTerminalTitle, stripAnsi, userBar, wrapText } from './ui';
 
 // Read from package.json (one level above dist/) so a version bump is a one-place edit.
 export const VERSION: string = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
@@ -51,16 +51,6 @@ function modeColor(mode: PermissionMode, s: string): string {
   return mode === 'plan' ? c.cyan(s) : mode === 'acceptEdits' ? c.magenta(s) : mode === 'auto' ? c.yellow(s) : mode === 'bypass' ? c.red(s) : s;
 }
 
-function box(lines: string[]): string {
-  const width = Math.min(columns() - 2, Math.max(...lines.map(l => stripAnsi(l).length)) + 4);
-  const pad = (l: string) => l + ' '.repeat(Math.max(0, width - 4 - stripAnsi(l).length));
-  return [
-    c.accent(`╭${'─'.repeat(width - 2)}╮`),
-    ...lines.map(l => `${c.accent('│')} ${pad(l)} ${c.accent('│')}`),
-    c.accent(`╰${'─'.repeat(width - 2)}╯`),
-  ].join('\n');
-}
-
 // The slash commands: the /help Commands tab and Tab completion both read this.
 const COMMANDS: { name: string; args?: string; about: string }[] = [
   { name: '/help', about: 'this help' },
@@ -73,6 +63,7 @@ const COMMANDS: { name: string; args?: string; about: string }[] = [
   { name: '/init', about: 'write a KEDTEC.md describing this project' },
   { name: '/memory', args: '[refresh|forget name]', about: 'list what the agent remembers about this project, re-learn its structure, or drop a memory' },
   { name: '/resume', about: 'reopen an earlier conversation in this directory' },
+  { name: '/sessions', about: "this workspace's saved conversations: resume, rename, delete one or all" },
   { name: '/todos', about: 'show the current checklist' },
   { name: '/cost', about: 'token usage this session' },
   { name: '/status', about: 'endpoint, model, mode, key and instruction files' },
@@ -375,13 +366,17 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
 
   const banner = () => {
     const model = agent.opts.model;
-    console.log(box([
-      `${c.accent('✻')} ${c.bold('KEDTec CLI')} ${c.gray(`v${VERSION}`)}`,
+    const mark = columns() >= 60 ? logo() : [];
+    const info = [
+      `${mark.length ? '' : `${c.accent('✻')} `}${c.bold('KEDTec CLI')} ${c.gray(`v${VERSION}`)}`,
       '',
       `${c.gray('model')}  ${model}`,
       `${c.gray('mode ')}  ${modeColor(permissions.mode, MODE_LABEL[permissions.mode])}`,
       `${c.gray('cwd  ')}  ${clip(root, 60)}`,
-    ]));
+    ];
+    // The mark on the left, the lines beside it from its second row.
+    const lines = mark.length ? mark.map((m, i) => (info[i - 1] ? `${m}   ${info[i - 1]}` : m)) : info;
+    console.log(`${lines.map(l => (l ? `  ${l}` : '')).join('\n')}\n`);
     const instr = loadInstructions(root, opts.projectConfig).map(f => displayPath(f.path, root));
     if (instr.length) console.log(c.gray(`  instructions: ${instr.join(', ')}`));
     console.log(c.gray('  /help for commands · ! runs a shell command · @file attaches a file · esc interrupts\n'));
@@ -462,6 +457,16 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   // The model list after a custom model was added or removed.
   const syncCustomModels = () => {
     opts.models.splice(0, opts.models.length, ...mergeCustomModels(opts.models.filter(m => !m.custom), readCustomModels()));
+  };
+
+  const resume = (picked: SessionFile) => {
+    persist();
+    session = picked;
+    agent.clear();
+    agent.messages = session.messages;
+    agent.usage = session.usage ?? { prompt: 0, completion: 0 };
+    console.log(c.gray(`  ⎿  Resumed "${session.title}". Files must be re-read before they are edited.`));
+    refreshBar();
   };
 
   const command = async (line: string): Promise<boolean> => {
@@ -582,15 +587,13 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
         if (sessions.length === 0) { console.log(c.gray('  No earlier conversations in this directory.')); return true; }
         const choice = await select(sessions.map(s => `${clip(s.title || '(untitled)', 50)} ${c.gray(`${s.updated.slice(0, 16).replace('T', ' ')} · ${s.messages.length} msgs`)}`), 0,
           { title: c.gray('  Resume a conversation (enter selects, esc cancels):'), transient: true });
-        if (choice !== null) {
-          persist();
-          session = sessions[choice];
-          agent.clear();
-          agent.messages = session.messages;
-          agent.usage = session.usage ?? { prompt: 0, completion: 0 };
-          console.log(c.gray(`  ⎿  Resumed "${session.title}". Files must be re-read before they are edited.`));
-          refreshBar();
-        }
+        if (choice !== null) resume(sessions[choice]);
+        return true;
+      }
+      case 'sessions': {
+        persist();
+        const picked = await manageSessions(root, session, input);
+        if (picked) resume(picked);
         return true;
       }
       case 'todos':
@@ -754,6 +757,76 @@ function rememberMode(mode: PermissionMode): void {
 function echo(text: string): void {
   const lines = text.split('\n');
   console.log(`\n${lines.map((l, i) => userBar(`${i === 0 ? c.gray('❯') : ' '} ${l}`)).join('\n')}`);
+}
+
+// /sessions: this workspace's saved conversations, newest first, under a
+// "Delete all…" entry. Choosing one offers what can be done with it; resolves
+// with the one to resume, or null. The current conversation is never deleted.
+async function manageSessions(root: string, current: SessionFile, input: Prompter): Promise<SessionFile | null> {
+  const when = (iso: string) => iso.slice(0, 16).replace('T', ' ');
+  const plural = (n: number) => `${n} conversation${n === 1 ? '' : 's'}`;
+  // The selection starts on the newest conversation, not on "Delete all…".
+  let at = 1;
+  for (;;) {
+    const all = listSessions(root);
+    if (all.length === 0) { console.log(c.gray('  No saved conversations in this workspace yet.')); return null; }
+    const deletable = all.filter(s => s.id !== current.id);
+    // With only the current conversation saved, "Delete all…" has nothing to do.
+    const lead = deletable.length > 0 ? 1 : 0;
+    at = Math.min(Math.max(at, lead), all.length - 1 + lead);
+    const rows = all.map(s => `${clip(s.title || '(untitled)', 50)}${s.id === current.id ? c.accent(' (current)') : ''} `
+      + c.gray(`${when(s.updated)} · ${s.messages.length} msgs`));
+    const choice = await select(lead ? [c.red('Delete all…'), ...rows] : rows, at, {
+      title: c.gray(`  ${plural(all.length)} saved in this workspace (enter opens, esc closes):`),
+      transient: true,
+      maxVisible: Math.max(5, Math.min(15, (process.stdout.rows || 24) - 14)),
+    });
+    if (choice === null) return null;
+    at = choice;
+    if (choice < lead) {
+      const sure = await select(['No, keep them', `Yes, delete ${plural(deletable.length)}`], 0, {
+        title: c.yellow('  Delete this workspace\'s saved conversations? It cannot be undone. The current one is kept.'),
+        transient: true,
+      });
+      if (sure === 1) console.log(c.gray(`  ⎿  Deleted ${plural(deletable.filter(deleteSession).length)}.`));
+      continue;
+    }
+    const s = all[choice - lead];
+    const isCurrent = s.id === current.id;
+    const actions: { label: string; run: () => Promise<SessionFile | null | 'back'> }[] = [];
+    if (!isCurrent) actions.push({ label: 'Resume', run: async () => s });
+    actions.push({
+      label: 'Rename',
+      run: async () => {
+        const a = await input.ask(`  ${c.gray('New title:')} `, { history: false, multiline: false, placeholder: s.title });
+        const title = a.kind === 'line' ? a.text.trim() : '';
+        if (!title) return 'back';
+        renameSession(s, title);
+        if (isCurrent) current.title = title;
+        console.log(c.gray(`  ⎿  Renamed to "${title}".`));
+        return 'back';
+      },
+    });
+    if (!isCurrent) {
+      actions.push({
+        label: 'Delete',
+        run: async () => {
+          const sure = await select(['No, keep it', `Yes, delete "${clip(s.title || '(untitled)', 40)}"`], 0,
+            { title: c.yellow('  Delete this conversation? It cannot be undone.'), transient: true });
+          if (sure === 1) console.log(c.gray(deleteSession(s) ? `  ⎿  Deleted "${s.title}".` : '  ⎿  Could not delete it.'));
+          return 'back';
+        },
+      });
+    }
+    actions.push({ label: 'Back', run: async () => 'back' });
+    const act = await select(actions.map(a => a.label), 0, {
+      title: `  ${c.bold(s.title || '(untitled)')}\n  ${c.gray(`${s.messages.length} msgs · started ${when(s.created)} · last ${when(s.updated)} · ${s.id}`)}`,
+      transient: true,
+    });
+    if (act === null) continue;
+    const result = await actions[act].run();
+    if (result !== 'back') return result;
+  }
 }
 
 function formatTokens(n: number): string {
