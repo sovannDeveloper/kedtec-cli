@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { ChatMessage, ContentPart, KbSource, ResearchPage, StoppedError, completeOnce, contentText, describeError, streamTurn } from './client';
 import { Permissions } from './permissions';
+import { cleanTitle } from './session';
 import { Question, QuestionAnswers, TOOLS, Todo, ToolOutcome, findTool, toolSchemas } from './tools';
 
 // What the loop reports as it goes. The interactive REPL and print mode render
@@ -216,6 +217,28 @@ export class Agent {
     this.readState.clear();
     this.lastPromptTokens = 0;
     return summary.trim();
+  }
+
+  // A few words naming the conversation, for /sessions: written by the model
+  // from the first request and the first reply. '' when there is nothing to
+  // name yet or the answer was unusable.
+  async suggestTitle(signal?: AbortSignal): Promise<string> {
+    const first = this.messages.find(m => m.role === 'user');
+    if (!first) return '';
+    const replied = this.messages.find(m => m.role === 'assistant' && m.content?.trim());
+    const reply = replied?.content ? contentText(replied.content) : '';
+    const raw = await completeOnce(this.opts.client, this.opts.model, [
+      {
+        role: 'system',
+        content: 'You name conversations between a developer and a coding agent. Reply with a title of 3 to 6 words that says what the '
+          + 'conversation is about, in the language the developer wrote in. Reply with the title only: no quotes, no label, no full stop.',
+      },
+      {
+        role: 'user',
+        content: `Request:\n${clipText(contentText(first.content), 2000)}${reply ? `\n\nFirst reply:\n${clipText(reply, 1000)}` : ''}`,
+      },
+    ], 200, signal);
+    return cleanTitle(raw);
   }
 
   clear(): void {

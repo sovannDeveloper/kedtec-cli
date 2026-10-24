@@ -13,6 +13,10 @@ export interface SessionFile {
   root: string;
   model: string;
   title: string;
+  // Where the title came from: the first line of the first message, the model
+  // (named once the first exchange is done), or a rename. Only a "prompt"
+  // title, or one from before this was recorded, is replaced by the model's.
+  titleSource?: 'prompt' | 'ai' | 'user';
   created: string;
   updated: string;
   messages: ChatMessage[];
@@ -60,6 +64,7 @@ export function listSessions(root: string): SessionFile[] {
 // A new title, leaving `updated` alone: renaming is not working in it.
 export function renameSession(s: SessionFile, title: string): void {
   s.title = title;
+  s.titleSource = 'user';
   fs.writeFileSync(path.join(projectDir(s.root), `${s.id}.json`), JSON.stringify(s), { mode: 0o600 });
 }
 
@@ -76,4 +81,19 @@ export function titleFrom(text: string): string {
   const line = text.split('\n').find(l => l.trim()) ?? '';
   const one = line.trim().replace(/\s+/g, ' ');
   return one.length > 60 ? `${one.slice(0, 59)}…` : one || '(untitled)';
+}
+
+// The model's answer to "name this conversation", as a title: its first
+// non-empty line without a "Title:" label, Markdown, quotes or a final full
+// stop. A thinking model's <think>…</think> block is dropped first.
+export function cleanTitle(raw: string): string {
+  const text = raw.replace(/<think>[\s\S]*?(<\/think>|$)/gi, '');
+  const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? '';
+  const bare = line
+    .replace(/^#+\s*/, '')
+    .replace(/^\*{0,2}title\*{0,2}\s*:\s*/i, '')
+    .replace(/^[*_`"'“‘«\s]+|[*_`"'”’»\s]+$/g, '')
+    .replace(/[.。]$/, '')
+    .trim();
+  return bare.length > 60 ? `${bare.slice(0, 59)}…` : bare;
 }

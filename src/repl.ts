@@ -406,7 +406,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     if (fromIde?.note) console.log(c.gray(`  ${fromIde.note}`));
     if (attached.length) console.log(c.gray(`  ⎿  attached ${attached.join(', ')}`));
     if (skipped.length) console.log(c.yellow(`  ⎿  too big to attach: ${skipped.join(', ')} — name lines, e.g. @file#L1-200`));
-    if (!session.title || session.title === '(untitled)') session.title = titleFrom(text);
+    if (!session.title || session.title === '(untitled)') { session.title = titleFrom(text); session.titleSource = 'prompt'; }
     current = new AbortController();
     renderer.beginTurn();
     renderer.thinking();
@@ -419,6 +419,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       // "✻ Baked for 9s" under a finished answer; an interrupted turn has
       // already said so.
       if (!result.stopped) done = renderer.endTurn();
+      if (!result.stopped && !result.error) autoName();
       // A reply that asks in prose ("Would you like me to: 1. … 2. …") gets
       // the form ask_user would have shown.
       const last = agent.messages[agent.messages.length - 1];
@@ -457,6 +458,24 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   // The model list after a custom model was added or removed.
   const syncCustomModels = () => {
     opts.models.splice(0, opts.models.length, ...mergeCustomModels(opts.models.filter(m => !m.custom), readCustomModels()));
+  };
+
+  // The model names a conversation once its first exchange is done, beside
+  // the conversation rather than in its way. One try per conversation: a
+  // backend that cannot do it is not asked again every turn. Nothing changes
+  // if it fails, if the conversation was renamed meanwhile, or if another one
+  // took its place. A title that lands during a turn is saved with that turn.
+  const named = new WeakSet<SessionFile>();
+  const autoName = () => {
+    const target = session;
+    if (named.has(target) || target.titleSource === 'ai' || target.titleSource === 'user') return;
+    named.add(target);
+    agent.suggestTitle().then(title => {
+      if (!title || session !== target || target.titleSource === 'user') return;
+      target.title = title;
+      target.titleSource = 'ai';
+      if (!current) persist();
+    }, () => { /* the first-line title stays */ });
   };
 
   const resume = (picked: SessionFile) => {
@@ -769,21 +788,25 @@ async function manageSessions(root: string, current: SessionFile, input: Prompte
   let at = 1;
   for (;;) {
     const all = listSessions(root);
-    if (all.length === 0) { console.log(c.gray('  No saved conversations in this workspace yet.')); return null; }
     const deletable = all.filter(s => s.id !== current.id);
-    // With only the current conversation saved, "Delete all…" has nothing to do.
-    const lead = deletable.length > 0 ? 1 : 0;
-    at = Math.min(Math.max(at, lead), all.length - 1 + lead);
+    // The current conversation can be neither resumed nor deleted, so a list
+    // of only it would be a menu with nowhere to go.
+    if (deletable.length === 0) {
+      console.log(c.gray(`  ⎿  ${all.length ? 'Only this conversation is saved in this workspace.' : 'No conversations are saved in this workspace yet.'}`));
+      return null;
+    }
+    at = Math.min(Math.max(at, 1), all.length);
     const rows = all.map(s => `${clip(s.title || '(untitled)', 50)}${s.id === current.id ? c.accent(' (current)') : ''} `
       + c.gray(`${when(s.updated)} · ${s.messages.length} msgs`));
-    const choice = await select(lead ? [c.red('Delete all…'), ...rows] : rows, at, {
-      title: c.gray(`  ${plural(all.length)} saved in this workspace (enter opens, esc closes):`),
+    const choice = await select([c.red('Delete all…'), ...rows], at, {
+      title: c.gray(`  ${plural(all.length)} saved in this workspace:`),
+      footer: c.gray('↑/↓ to move · enter to open · esc to close'),
       transient: true,
       maxVisible: Math.max(5, Math.min(15, (process.stdout.rows || 24) - 14)),
     });
     if (choice === null) return null;
     at = choice;
-    if (choice < lead) {
+    if (choice === 0) {
       const sure = await select(['No, keep them', `Yes, delete ${plural(deletable.length)}`], 0, {
         title: c.yellow('  Delete this workspace\'s saved conversations? It cannot be undone. The current one is kept.'),
         transient: true,
@@ -791,7 +814,7 @@ async function manageSessions(root: string, current: SessionFile, input: Prompte
       if (sure === 1) console.log(c.gray(`  ⎿  Deleted ${plural(deletable.filter(deleteSession).length)}.`));
       continue;
     }
-    const s = all[choice - lead];
+    const s = all[choice - 1];
     const isCurrent = s.id === current.id;
     const actions: { label: string; run: () => Promise<SessionFile | null | 'back'> }[] = [];
     if (!isCurrent) actions.push({ label: 'Resume', run: async () => s });
@@ -802,7 +825,7 @@ async function manageSessions(root: string, current: SessionFile, input: Prompte
         const title = a.kind === 'line' ? a.text.trim() : '';
         if (!title) return 'back';
         renameSession(s, title);
-        if (isCurrent) current.title = title;
+        if (isCurrent) { current.title = title; current.titleSource = 'user'; }
         console.log(c.gray(`  ⎿  Renamed to "${title}".`));
         return 'back';
       },

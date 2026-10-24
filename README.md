@@ -65,7 +65,7 @@ Print mode (`-p`, CI) never asks.
 | `/mode [default\|acceptEdits\|auto\|plan\|bypass]` · `/plan` | permission mode (no argument cycles) |
 | `/compact [focus]` | summarise the conversation to free context (also automatic near the limit) |
 | `/clear` · `/resume` | new conversation · reopen an earlier one |
-| `/sessions` | this workspace's saved conversations: resume, rename, delete one, or delete all (`kedtec sessions`, `kedtec sessions rm <id>` and `kedtec sessions clear` from the shell) |
+| `/sessions` | this workspace's saved conversations: resume, rename, delete one, or delete all (`kedtec sessions`, `kedtec sessions rm <id>` and `kedtec sessions clear` from the shell). The model titles each conversation after its first exchange; a rename is never overwritten |
 | `/init` | have the agent write a `KEDTEC.md` for the project |
 | `/memory` · `/memory refresh` · `/memory forget <name>` | list what the agent remembers about this project · re-learn its structure now · drop one memory |
 | `/todos` · `/cost` · `/status` | checklist · token usage · configuration |

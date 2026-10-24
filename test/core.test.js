@@ -750,3 +750,28 @@ test('sessions: listed per workspace, renamed without reordering, deleted', () =
     before: ['three', 'one'], renamed: ['three', 'First'], deleted: true, again: false, after: ['one'], other: ['two'],
   });
 });
+
+test('session titles: the model names the conversation from its first exchange', async () => {
+  const { cleanTitle } = require('../dist/session');
+  assert.strictEqual(cleanTitle('Fix login redirect bug'), 'Fix login redirect bug');
+  assert.strictEqual(cleanTitle('"Fix login redirect bug."'), 'Fix login redirect bug');
+  assert.strictEqual(cleanTitle('**Title:** Add dark mode toggle\n\nThis covers…'), 'Add dark mode toggle');
+  assert.strictEqual(cleanTitle('# Refactor session storage'), 'Refactor session storage');
+  assert.strictEqual(cleanTitle('<think>The user wants…</think>\nTodo widget styling'), 'Todo widget styling');
+  assert.strictEqual(cleanTitle('<think>never closed'), '');
+  assert.strictEqual(cleanTitle('x'.repeat(80)).length, 60);
+
+  const { Agent } = require('../dist/agent');
+  let sent;
+  const client = { chat: { completions: { create: async req => { sent = req; return { choices: [{ message: { content: 'Title: Fix todo item widget.' } }] }; } } } };
+  const agent = new Agent({ client, model: 'm', root: '/tmp', permissions: null, maxTokens: 100, temperature: 0, maxTurns: 1, systemPrompt: () => '' });
+  assert.strictEqual(await agent.suggestTitle(), '', 'nothing to name yet');
+  agent.messages = [
+    { role: 'user', content: [{ type: 'text', text: 'the todo item widget overflows' }, { type: 'image_url', image_url: { url: 'data:' } }] },
+    { role: 'assistant', content: null, tool_calls: [] },
+    { role: 'assistant', content: 'Fixed the overflow in todo_item_widget.dart.' },
+  ];
+  assert.strictEqual(await agent.suggestTitle(), 'Fix todo item widget');
+  assert.match(sent.messages[1].content, /the todo item widget overflows\[image\][\s\S]*First reply:\nFixed the overflow/);
+  assert.strictEqual(sent.max_tokens, 200);
+});
