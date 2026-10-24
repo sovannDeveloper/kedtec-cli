@@ -1,6 +1,6 @@
 {
   "name": "kedtec",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "KEDTec terminal coding agent: a Claude Code-style CLI for the KEDTec AI API and any OpenAI-compatible endpoint",
   "license": "MIT",
   "bin": {
