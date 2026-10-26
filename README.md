@@ -145,17 +145,25 @@ installed or running:
   view's `…` menu) asks for the endpoint, key and default model, as `kedtec
   login` does.
 - Approvals appear in the chat as cards (edits show their diff), and so do
-  `ask_user` questions. The mode and model menus are under the input. Bypass is
-  offered only when the configured mode is already bypass.
+  `ask_user` questions. In the input box, the mode pill changes the permission
+  mode (click it, or Shift+Tab as in the CLI), and the model menu switches models.
+  Bypass is offered only when the configured mode is already bypass.
 - The open file, or the lines selected in it, go with your message once per
-  change, as from the terminal. Click the `⧉` chip to leave them out. Paste an
-  image to attach it.
-- Conversations are saved with the CLI's, per folder: the history button lists
-  them, and `kedtec -c` in a terminal continues one started in the panel.
+  change, as from the terminal. Click the `⧉` chip to leave them out. Paste,
+  drop (hold Shift) or pick an image with the paperclip to attach it.
+- `@` attaches a file, as in the CLI: typing it lists the project's files
+  (↑/↓, Tab or Enter picks one; a folder opens its contents). `@src/app.ts#L10-20`
+  sends just those lines, and `@shot.png` sends the image.
+- Conversations are saved with the CLI's, per folder, and `kedtec -c` in a
+  terminal continues one started in the panel. The history button (or
+  `/sessions`, `/resume`) opens the Conversations view: search them, click one to
+  reopen it, rename one with the pencil (or F2), delete one with the bin (or
+  Delete), or delete all but the current one. The welcome screen lists the
+  three most recent. `/rename <title>` renames the conversation in progress.
 - Type `/` for the slash commands, filtered as you type (↑/↓, Tab or Enter
   picks one): `/help`, `/clear`, `/compact [focus]`, `/model [id]`, `/mode
   [name]`, `/plan`, `/init`, `/memory [refresh|forget name]`, `/resume`,
-  `/todos`, `/cost`, `/status`, `/login`. Esc or **Stop** ends a turn and
+  `/sessions`, `/rename <title>`, `/todos`, `/cost`, `/status`, `/login`. Esc or **Stop** ends a turn and
   declines any approval left open.
 - In a Restricted Mode window the panel works like `--no-project-config`: the
   project's instruction files, `.kedtec/settings.json` and memory are ignored

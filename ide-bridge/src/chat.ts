@@ -9,12 +9,13 @@ import {
   resolveConfig, resolveKey, writeStoredConfig,
 } from '../../src/config';
 import { IdeContext, IdeState, ideLabel } from '../../src/ide';
-import { MAX_IMAGE_BYTES } from '../../src/images';
+import { MAX_IMAGE_BYTES, dataUrl, imageFromFile } from '../../src/images';
+import { expandMentions, makeMentionFinder } from '../../src/mentions';
 import { STRUCTURE_MEMORY, deleteMemory, isMemoryName, listMemories, memoryDir } from '../../src/memory';
 import { PermissionAnswer, PermissionRequest, Permissions } from '../../src/permissions';
 import { INIT_PROMPT, MEMORY_REFRESH_PROMPT, buildSystemPrompt, findGitRoot, loadInstructions } from '../../src/prompt';
 import { sourceRows } from '../../src/render';
-import { SessionFile, listSessions, newSessionId, saveSession, titleFrom } from '../../src/session';
+import { SessionFile, deleteSession, listSessions, newSessionId, renameSession, saveSession, titleFrom } from '../../src/session';
 import { Question, QuestionAnswers, displayPath, findTool, questionsInProse } from '../../src/tools';
 import { setColor, stripAnsi } from '../../src/ui';
 
@@ -45,6 +46,8 @@ const COMMANDS: { name: string; args?: string; about: string }[] = [
   { name: '/init', about: 'write a KEDTEC.md describing this project' },
   { name: '/memory', args: '[refresh|forget name]', about: 'what the agent remembers about this project' },
   { name: '/resume', about: 'reopen an earlier conversation in this folder' },
+  { name: '/sessions', about: "this folder's saved conversations: open, rename, delete one or all" },
+  { name: '/rename', args: '<title>', about: 'rename this conversation' },
   { name: '/todos', about: 'show the current checklist' },
   { name: '/cost', about: 'token usage this conversation' },
   { name: '/status', about: 'endpoint, model, mode, key and instruction files' },
@@ -58,6 +61,8 @@ interface Core {
   agent: Agent;
   permissions: Permissions;
   clientFor(info: ModelInfo | undefined): ReturnType<typeof createClient>;
+  // The paths to suggest after an "@" (mentions.ts, as the CLI's input box).
+  mentions(query: string): string[];
 }
 
 type Pending =
@@ -83,6 +88,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private ideContext: IdeContext | null = null;
   private loading: Promise<void> | null = null;
   private readonly named = new WeakSet<SessionFile>();
+  private lastMention: { id: number; query: string } | null = null;
+  // The history command ran before the webview was there: show the list once it is.
+  private sessionsOnReady = false;
 
   constructor(private readonly context: vscode.ExtensionContext, private readonly editorState: () => IdeState) {
     // Tool output is shown as text, not drawn on a terminal.
@@ -118,33 +126,82 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'reset', items: [] });
     this.showTitle('');
     this.postState();
+    this.postSessions();
   }
 
+  // The conversations view in the panel: search, open, rename and delete.
   async showHistory(): Promise<void> {
+    if (!this.view) {
+      this.sessionsOnReady = true;
+      await vscode.commands.executeCommand(`${VIEW_ID}.focus`);
+      return;
+    }
+    this.view.show?.(true);
     await this.ensureCore();
-    if (!this.core) return;
-    const core = this.core;
-    const sessions = listSessions(core.root);
-    if (sessions.length === 0) { void vscode.window.showInformationMessage('No saved KEDTec conversations for this folder yet.'); return; }
-    const picked = await vscode.window.showQuickPick(sessions.map(s => ({
-      label: s.title || '(untitled)',
-      description: `${s.updated.slice(0, 16).replace('T', ' ')} · ${s.messages.length} msgs`,
-      detail: s.id === this.session?.id ? 'current conversation' : undefined,
-      session: s,
-    })), { title: 'Resume a KEDTec conversation', matchOnDescription: true });
-    if (!picked || picked.session.id === this.session?.id) return;
+    this.postSessions(true);
+  }
+
+  private resume(picked: SessionFile): void {
+    const core = this.core!;
     this.stop();
     this.persist();
-    this.session = picked.session;
+    this.session = picked;
     core.agent.clear();
-    core.agent.messages = picked.session.messages;
-    core.agent.usage = picked.session.usage ?? { prompt: 0, completion: 0 };
+    core.agent.messages = picked.messages;
+    core.agent.usage = picked.usage ?? { prompt: 0, completion: 0 };
     this.ideContext = new IdeContext(core.root);
-    this.post({ type: 'reset', items: historyItems(picked.session, core.root) });
-    this.showTitle(picked.session.title);
+    this.post({ type: 'reset', items: historyItems(picked, core.root) });
+    this.showTitle(picked.title);
     this.post({ type: 'notice', message: 'Resumed. Files must be re-read before they are edited.' });
     this.postState();
-    void vscode.commands.executeCommand(`${VIEW_ID}.focus`);
+  }
+
+  // This folder's saved conversations, newest first. `show` opens the list;
+  // without it the list is only refreshed (and feeds the welcome screen).
+  private postSessions(show = false): void {
+    const core = this.core;
+    if (!core) return;
+    const items = listSessions(core.root).map(s => ({
+      id: s.id, title: s.title || '(untitled)', updated: s.updated, messages: s.messages.length, current: s.id === this.session?.id,
+    }));
+    this.post({ type: 'sessions', items, show });
+  }
+
+  private openSession(id: string): void {
+    const core = this.core;
+    if (!core || id === this.session?.id) return;
+    const picked = listSessions(core.root).find(s => s.id === id);
+    if (!picked) { this.post({ type: 'notice', message: 'That conversation is no longer saved.' }); this.postSessions(); return; }
+    this.resume(picked);
+    this.postSessions();
+  }
+
+  // The conversation in progress is renamed in memory and saved with its
+  // messages; another is renamed on disk, as /sessions does in the CLI.
+  private renameConversation(id: string, raw: string): void {
+    const core = this.core;
+    const title = raw.trim().replace(/\s+/g, ' ').slice(0, 80);
+    if (!core || !title) return;
+    if (id === this.session?.id) {
+      this.session.title = title;
+      this.session.titleSource = 'user';
+      this.persist();
+      this.showTitle(title);
+    } else {
+      const s = listSessions(core.root).find(x => x.id === id);
+      if (s) renameSession(s, title);
+    }
+    this.postSessions();
+  }
+
+  // One conversation, or with no id every one but the current, which is never deleted.
+  private deleteConversations(id?: string): void {
+    const core = this.core;
+    if (!core) return;
+    const doomed = listSessions(core.root).filter(s => s.id !== this.session?.id && (id === undefined || s.id === id));
+    const failed = doomed.filter(s => !deleteSession(s)).length;
+    if (failed) this.post({ type: 'notice', message: `Could not delete ${failed} conversation${failed === 1 ? '' : 's'}.` });
+    this.postSessions();
   }
 
   // Endpoint, key and default model, the same three questions `kedtec login` asks.
@@ -198,17 +255,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         this.postState();
         this.editorChanged();
+        this.postSessions(this.sessionsOnReady);
+        this.sessionsOnReady = false;
         break;
       }
       case 'send': await this.send(String(msg.text ?? ''), Array.isArray(msg.images) ? msg.images.map(String) : [], msg.includeEditor !== false); break;
       case 'stop': this.stop(); break;
       case 'newChat': await this.newChat(); break;
       case 'history': await this.showHistory(); break;
+      case 'sessions': await this.ensureCore(); this.postSessions(); break;
+      case 'openSession': this.openSession(String(msg.id)); break;
+      case 'renameSession': this.renameConversation(String(msg.id), String(msg.title ?? '')); break;
+      case 'deleteSession': this.deleteConversations(String(msg.id)); break;
+      case 'deleteAllSessions': this.deleteConversations(); break;
       case 'signIn': await this.signIn(); break;
       case 'retry': await this.reload(); break;
       case 'setMode': this.setMode(String(msg.mode)); break;
       case 'setModel': this.setModel(String(msg.id)); break;
       case 'openFile': await this.openFile(String(msg.path ?? '')); break;
+      case 'mentions': {
+        await this.ensureCore();
+        this.lastMention = { id: Number(msg.id), query: String(msg.query ?? '') };
+        this.answerMentions(this.lastMention.id, this.lastMention.query);
+        break;
+      }
       case 'permissionAnswer': {
         const p = this.take(Number(msg.id), 'permission');
         if (!p) break;
@@ -226,6 +296,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
     }
+  }
+
+  private answerMentions(id: number, query: string): void {
+    const items = this.core?.mentions(query) ?? [];
+    this.post({ type: 'mentionResults', id, query, items });
   }
 
   private take<K extends Pending['kind']>(id: number, kind: K): Extract<Pending, { kind: K }> | undefined {
@@ -288,7 +363,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         root, mode: permissions.mode, model: agent.opts.model, nonInteractive: false, projectConfig, memoryDir: memDir, host: 'vscode',
       }),
     });
-    this.core = { root, cfg, models, agent, permissions, clientFor };
+    // The file list arrives after the first "@"; the suggestions then shown
+    // are answered again with it.
+    const mentions = makeMentionFinder(root, () => { if (this.lastMention) this.answerMentions(this.lastMention.id, this.lastMention.query); });
+    this.core = { root, cfg, models, agent, permissions, clientFor, mentions };
     if (!this.session || this.session.root !== root) {
       this.session = this.freshSession(this.core);
       this.ideContext = new IdeContext(root);
@@ -328,14 +406,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       accepted.push(url);
     }
 
+    // "@src/app.ts" (or "@src/app.ts#L10-20") attaches the file, as in the
+    // CLI; "@shot.png" sends the image. Not for a built-in prompt like /init.
+    const notes: string[] = [];
+    let typed = trimmed;
+    if (shown === undefined) {
+      const mentioned = expandMentions(trimmed, core.root, core.agent.readState);
+      typed = mentioned.text;
+      for (const img of mentioned.images) {
+        const loaded = await imageFromFile(img.path);
+        if (typeof loaded === 'string') this.post({ type: 'notice', message: `Cannot attach ${img.label}: ${loaded}` });
+        else { accepted.push(dataUrl(loaded)); mentioned.attached.push(img.label); }
+      }
+      if (mentioned.attached.length) notes.push(`⎿ attached ${mentioned.attached.join(', ')}`);
+      if (mentioned.skipped.length) {
+        this.post({ type: 'notice', message: `Too big to attach: ${mentioned.skipped.join(', ')}. Name lines instead, e.g. @file#L1-200.` });
+      }
+    }
+
     const fromIde = includeEditor ? this.ideContext?.forMessage(this.editorState()) ?? null : null;
-    const expanded = fromIde ? `${trimmed}\n\n${fromIde.text}` : trimmed;
+    if (fromIde?.note) notes.unshift(fromIde.note);
+    const expanded = fromIde ? `${typed}\n\n${fromIde.text}` : typed;
     const input: string | ContentPart[] = accepted.length
       ? [{ type: 'text', text: expanded }, ...accepted.map(url => ({ type: 'image_url' as const, image_url: { url } }))]
       : expanded;
     const label = shown ?? trimmed;
     if (!session.title || session.title === '(untitled)') { session.title = titleFrom(label || 'Image'); session.titleSource = 'prompt'; }
-    this.post({ type: 'user', text: label, images: accepted, note: fromIde?.note ?? '' });
+    this.post({ type: 'user', text: label, images: accepted, note: notes.join(' · ') });
     this.showTitle(session.title);
 
     const controller = new AbortController();
@@ -359,6 +456,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.persist();
       this.post({ type: 'busy', busy: false });
       this.postState();
+      this.postSessions();
     }
     if (asked) {
       const answer = await this.askQuestions(asked);
@@ -383,6 +481,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'clear': case 'new': await this.newChat(); return;
       case 'compact': await this.compact(arg || undefined); return;
       case 'resume': case 'sessions': await this.showHistory(); return;
+      case 'rename': {
+        if (!arg) { this.post({ type: 'notice', message: 'Usage: /rename <title>' }); return; }
+        this.renameConversation(this.session!.id, arg);
+        info(`Renamed to "${this.session!.title}".`);
+        return;
+      }
       case 'login': case 'signin': await this.signIn(); return;
       case 'init': await this.send(INIT_PROMPT, [], false, '/init'); return;
       case 'model': case 'models': {
@@ -650,20 +754,50 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
 <main id="log" aria-live="polite"></main>
+<section id="sessions" aria-label="Conversations" hidden>
+  <header class="sessions-head">
+    <button id="sessions-back" class="icon-button" title="Back to the chat (Esc)" aria-label="Back to the chat">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg>
+    </button>
+    <h2>Conversations</h2>
+    <button id="sessions-new" class="icon-button" title="New chat" aria-label="New chat">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+    </button>
+  </header>
+  <div class="sessions-search">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>
+    <input id="sessions-filter" type="text" placeholder="Search conversations" aria-label="Search conversations">
+  </div>
+  <div id="sessions-list" role="list"></div>
+  <div class="sessions-foot"><button id="sessions-clear" class="small danger">Delete all others…</button></div>
+</section>
 <footer>
-  <div id="status" hidden><span class="spinner"></span><span id="status-label">Thinking…</span><span id="status-time"></span></div>
-  <div id="attachments"></div>
+  <button id="to-bottom" class="icon-button floating" title="Scroll to the latest message" hidden>
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v9M4 8.5l4 4 4-4"/></svg>
+  </button>
+  <div id="status" hidden><span id="glyph" aria-hidden="true">✻</span><span id="status-label">Thinking…</span><span id="status-time"></span><span class="hint"><kbd>Esc</kbd> to stop</span></div>
   <div id="suggest" role="listbox" hidden></div>
   <div class="composer">
-    <textarea id="input" rows="1" placeholder="Ask KEDTec to read, explain or change code…"></textarea>
-    <button id="send" title="Send (Enter)">Send</button>
+    <div id="attachments"></div>
+    <textarea id="input" rows="1" placeholder="Ask KEDTec anything  ·  @ files  ·  / commands"></textarea>
+    <div class="toolbar">
+      <button id="mode" class="pill" title="Permission mode: click or Shift+Tab to change"></button>
+      <button id="context" class="chip" title="Sent with the next message (click to leave it out)" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.5h5l3.5 3.5v9.5h-8.5z"/><path d="M9 1.5V5h3.5"/></svg><span id="context-label"></span>
+      </button>
+      <span class="spacer"></span>
+      <span id="usage"></span>
+      <select id="model" title="Model"></select>
+      <button id="attach" class="icon-button" title="Attach an image (or paste or drop one)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 4.5 5.2 9.8a1.5 1.5 0 0 0 2.1 2.1l5.6-5.6a3 3 0 0 0-4.2-4.2L3 7.8a4.5 4.5 0 0 0 6.4 6.4l4.1-4.1"/></svg>
+      </button>
+      <button id="send" class="send" title="Send (Enter)">
+        <svg class="arrow" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg>
+        <svg class="square" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>
+      </button>
+    </div>
   </div>
-  <div class="bar">
-    <select id="mode" title="Permission mode"></select>
-    <select id="model" title="Model"></select>
-    <button id="context" class="chip" title="Send the open file or selection with the next message (click to turn off)"></button>
-    <span id="usage"></span>
-  </div>
+  <input id="file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
 </footer>
 <script nonce="${nonce}" src="${script}"></script>
 </body>
@@ -693,7 +827,9 @@ export function historyItems(session: SessionFile, root: string): HistoryItem[] 
       if (text.startsWith('Your reply was cut off by the output limit.')) continue;
       if (text.startsWith('This conversation was compacted.')) { items.push({ type: 'notice', message: 'Earlier messages were compacted into a summary.' }); continue; }
       const images = Array.isArray(m.content) ? m.content.filter(p => p.type === 'image_url').length : 0;
-      items.push({ type: 'user', text: text.replace(/\n\n<ide_(?:selection|opened_file)[\s\S]*$/, '').trim(), images });
+      // What was typed, without the attached files and editor context after it.
+      const typed = text.replace(/\n\n(?:Attached files \(line-numbered as read_file returns them\):|<ide_(?:selection|opened_file))[\s\S]*$/, '');
+      items.push({ type: 'user', text: typed.trim(), images });
     } else if (m.role === 'assistant') {
       if (m.content?.trim() && !m.content.startsWith('Understood — continuing from that summary.')) items.push({ type: 'assistant', text: m.content });
       for (const call of m.tool_calls ?? []) {

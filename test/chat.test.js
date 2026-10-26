@@ -111,7 +111,7 @@ async function openPanel(name, { onPermission = () => 'yes', selection } = {}) {
   await panel.receive({ type: 'ready' });
   const state = posted.find(m => m.type === 'state' || m.type === 'fatal');
   assert.strictEqual(state?.type, 'state', state?.message);
-  return { root, posted, send, state };
+  return { root, posted, send, state, panel };
 }
 
 test('chat panel: starts on the endpoint\'s model and offers the modes and slash commands', async () => {
@@ -198,4 +198,76 @@ test('chat panel: /init sends the CLI\'s prompt but shows "/init"', async () => 
   const out = await p.send('/init', { includeEditor: false });
   assert.strictEqual(out.find(m => m.type === 'user').text, '/init');
   assert.strictEqual(requests[0].messages.at(-1).content, INIT_PROMPT);
+});
+
+test('chat panel: "@" suggests project files, and an @file is attached to the message as in the CLI', async () => {
+  const p = await openPanel('mention');
+  fs.mkdirSync(path.join(p.root, 'src'));
+  fs.writeFileSync(path.join(p.root, 'src', 'app.ts'), 'one\ntwo\nthree\n');
+  fs.writeFileSync(path.join(p.root, 'README.md'), '# hi\n');
+
+  const ask = async (id, query) => {
+    const from = p.posted.length;
+    await p.panel.receive({ type: 'mentions', id, query });
+    return p.posted.slice(from).find(m => m.type === 'mentionResults');
+  };
+  assert.deepStrictEqual((await ask(1, 'src/')).items, ['src/app.ts']);
+  assert.deepStrictEqual((await ask(2, '')).items, ['README.md', 'src/']);
+  // A bare name also searches the whole project, once its file list is built.
+  await ask(3, 'app');
+  for (let i = 0; i < 100 && !p.posted.some(m => m.type === 'mentionResults' && m.id === 3 && m.items.includes('src/app.ts')); i++) await new Promise(r => setTimeout(r, 10));
+  assert.ok(p.posted.some(m => m.type === 'mentionResults' && m.id === 3 && m.items.includes('src/app.ts')), 'a re-answer with the project file');
+
+  replies = [{ text: 'It counts to three.' }];
+  const out = await p.send('what does @src/app.ts#L2-3 do?', { includeEditor: false });
+  const user = out.find(m => m.type === 'user');
+  assert.strictEqual(user.text, 'what does @src/app.ts#L2-3 do?');
+  assert.strictEqual(user.note, '⎿ attached src/app.ts:2-3');
+  assert.match(requests[0].messages.at(-1).content, /<file path="src\/app.ts" lines="2-3" total="4">\n2\|two\n3\|three\n<\/file>/);
+
+  const { listSessions } = require('../dist/session');
+  const [saved] = listSessions(p.root);
+  assert.deepStrictEqual(historyItems(saved, p.root)[0], { type: 'user', text: 'what does @src/app.ts#L2-3 do?', images: 0 });
+});
+
+test('chat panel: the conversations view lists, renames, opens and deletes this folder\'s sessions, never the current one', async () => {
+  const p = await openPanel('sessions');
+  const latest = () => p.posted.filter(m => m.type === 'sessions').at(-1);
+  replies = [{ text: 'first answer' }];
+  await p.send('first question', { includeEditor: false });
+  const first = latest().items[0];
+  assert.strictEqual(first.current, true);
+
+  await p.panel.receive({ type: 'newChat' });
+  replies = [{ text: 'second answer' }];
+  await p.send('second question', { includeEditor: false });
+  let items = latest().items;
+  assert.strictEqual(items.length, 2);
+  const second = items.find(s => s.current);
+  assert.notStrictEqual(second.id, first.id);
+
+  // /sessions opens the list in the panel.
+  await p.send('/sessions');
+  assert.strictEqual(latest().show, true);
+
+  await p.panel.receive({ type: 'renameSession', id: first.id, title: '  Renamed   one ' });
+  assert.strictEqual(latest().items.find(s => s.id === first.id).title, 'Renamed one');
+  const { listSessions } = require('../dist/session');
+  assert.strictEqual(listSessions(p.root).find(s => s.id === first.id).titleSource, 'user');
+
+  // The current one cannot be deleted, alone or with the rest.
+  await p.panel.receive({ type: 'deleteSession', id: second.id });
+  await p.panel.receive({ type: 'deleteAllSessions' });
+  assert.deepStrictEqual(latest().items.map(s => s.id), [second.id]);
+  assert.strictEqual(listSessions(p.root).length, 1);
+
+  // Opening another conversation shows its messages.
+  await p.panel.receive({ type: 'newChat' });
+  replies = [{ text: 'third answer' }];
+  await p.send('third question', { includeEditor: false });
+  const from = p.posted.length;
+  await p.panel.receive({ type: 'openSession', id: second.id });
+  const reset = p.posted.slice(from).find(m => m.type === 'reset');
+  assert.deepStrictEqual(reset.items.filter(i => i.type === 'user').map(i => i.text), ['second question']);
+  assert.ok(latest().items.find(s => s.id === second.id).current);
 });

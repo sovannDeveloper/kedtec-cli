@@ -2,7 +2,7 @@
   "name": "kedtec-ide-bridge",
   "displayName": "KEDTec",
   "description": "KEDTec coding agent chat in VS Code, and the bridge that shows the kedtec terminal CLI your open file and selection",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "kedtec",
   "license": "MIT",
   "repository": {
@@ -49,7 +49,7 @@
       },
       {
         "command": "kedtec.history",
-        "title": "Resume Conversation…",
+        "title": "Conversations…",
         "category": "KEDTec",
         "icon": "$(history)"
       },
