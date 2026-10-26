@@ -5,14 +5,14 @@ import { Agent } from './agent';
 import { ContentPart, ModelInfo, describeError, listModels, mergeCustomModels } from './client';
 import {
   CustomModel, PERMISSION_MODES, PermissionMode, ResolvedConfig, maskKey, normalizeMode, readCustomModels, readStoredConfig,
-  removeCustomModel, resolveKey, saveCustomModel, writeStoredConfig,
+  rememberMode, removeCustomModel, resolveKey, saveCustomModel, writeStoredConfig,
 } from './config';
 import { ImageAttachment, dataUrl, imageFromFile, isImagePath } from './images';
 import { PastedText, withPastes } from './pastes';
 import { LineInput, PanelTab, Prompter, TurnKeys, questionForm, select, tabbedPanel } from './input';
 import { STRUCTURE_MEMORY, deleteMemory, isMemoryName, listMemories } from './memory';
 import { Asker, PermissionRequest, Permissions } from './permissions';
-import { loadInstructions } from './prompt';
+import { INIT_PROMPT, MEMORY_REFRESH_PROMPT, loadInstructions } from './prompt';
 import { TerminalRenderer } from './render';
 import { IdeContext, IdeWatcher, ideLabel } from './ide';
 import { ensureIdeBridge } from './ideBridge';
@@ -181,13 +181,6 @@ function helpTabs(fullScreen: boolean): PanelTab[] {
   };
   return [general, commands];
 }
-
-const INIT_PROMPT = `Analyse this codebase and write a KEDTEC.md file at the project root for future agent sessions.
-Include: what the project is; the commands to install, build, run, lint and test (and how to run a single test); the high-level architecture and how the main pieces fit together, which needs several files read to understand; and the conventions and gotchas a newcomer would not guess.
-Do not list every file or repeat what is obvious from the tree, and do not invent anything you have not seen. If a KEDTEC.md, CLAUDE.md or AGENTS.md already exists, improve it instead of starting over. Read README files and manifests first.`;
-
-const MEMORY_REFRESH_PROMPT = `Re-learn this project's structure and update the "${STRUCTURE_MEMORY}" memory with the memory tool.
-Read the README, the manifests and any instruction files, list the top level and the main source folders, and open the entry points. Then save "${STRUCTURE_MEMORY}" (type "project"): what the project is, the commands to install, build, run and test (one test too), the main folders and what each holds, how the main pieces fit together, and the gotchas a newcomer would trip on. At most about 60 lines, only what you saw, no file-by-file listing. Correct anything in the old version that is no longer true. Reply with a few lines on what changed.`;
 
 // The KEDTec API refuses a message over 100,000 characters (a 422), so what the
 // mentions attach shares this budget, leaving room for the typed text and an
@@ -764,19 +757,6 @@ export async function askCustomModel(input: Prompter, cfg: { endpoint: string; a
     console.log(c.yellow(`  ! Could not read the endpoint's model list (${describeError(err)}); saved anyway.`));
   }
   return { id, endpoint, apiKey, contextWindow };
-}
-
-// The mode picked last becomes the default for the next session — except
-// bypass, which has to be asked for each time (--dangerously-skip-permissions):
-// a session that silently starts with every prompt skipped is not one anybody
-// chose. A flag or KEDTEC_PERMISSION_MODE still wins over what is saved here.
-function rememberMode(mode: PermissionMode): void {
-  if (mode === 'bypass') return;
-  try {
-    const stored = readStoredConfig();
-    if (stored.permissionMode === mode) return;
-    writeStoredConfig({ ...stored, permissionMode: mode });
-  } catch { /* remembering is a convenience */ }
 }
 
 function echo(text: string): void {

@@ -160,6 +160,19 @@ export function removeCustomModel(id: string): boolean {
   return true;
 }
 
+// The mode picked last becomes the default for the next session — except
+// bypass, which has to be asked for each time (--dangerously-skip-permissions):
+// a session that silently starts with every prompt skipped is not one anybody
+// chose. A flag or KEDTEC_PERMISSION_MODE still wins over what is saved here.
+export function rememberMode(mode: PermissionMode): void {
+  if (mode === 'bypass') return;
+  try {
+    const stored = readStoredConfig();
+    if (stored.permissionMode === mode) return;
+    writeStoredConfig({ ...stored, permissionMode: mode });
+  } catch { /* remembering is a convenience */ }
+}
+
 // "$NAME" → the variable's value; anything else is the key itself.
 export function resolveKey(key: string | undefined): string | undefined {
   if (!key) return undefined;

@@ -1,8 +1,8 @@
 {
   "name": "kedtec-ide-bridge",
-  "displayName": "KEDTec CLI Bridge",
-  "description": "Shows the kedtec terminal CLI which file is open and what is selected in this window",
-  "version": "0.1.0",
+  "displayName": "KEDTec",
+  "description": "KEDTec coding agent chat in VS Code, and the bridge that shows the kedtec terminal CLI your open file and selection",
+  "version": "0.2.0",
   "publisher": "kedtec",
   "license": "MIT",
   "repository": {
@@ -13,20 +13,93 @@
     "vscode": "^1.90.0"
   },
   "categories": [
+    "AI",
+    "Chat",
     "Other"
   ],
   "activationEvents": [
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "kedtec",
+          "title": "KEDTec",
+          "icon": "media/kedtec.svg"
+        }
+      ]
+    },
+    "views": {
+      "kedtec": [
+        {
+          "type": "webview",
+          "id": "kedtec.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "kedtec.newChat",
+        "title": "New Chat",
+        "category": "KEDTec",
+        "icon": "$(add)"
+      },
+      {
+        "command": "kedtec.history",
+        "title": "Resume Conversation…",
+        "category": "KEDTec",
+        "icon": "$(history)"
+      },
+      {
+        "command": "kedtec.signIn",
+        "title": "Sign In (Endpoint, API Key, Model)",
+        "category": "KEDTec",
+        "icon": "$(key)"
+      },
+      {
+        "command": "kedtec.reload",
+        "title": "Reload Configuration",
+        "category": "KEDTec"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "kedtec.newChat",
+          "when": "view == kedtec.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "kedtec.history",
+          "when": "view == kedtec.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "kedtec.signIn",
+          "when": "view == kedtec.chat",
+          "group": "more@1"
+        },
+        {
+          "command": "kedtec.reload",
+          "when": "view == kedtec.chat",
+          "group": "more@2"
+        }
+      ]
+    }
+  },
   "capabilities": {
     "untrustedWorkspaces": {
-      "supported": true
+      "supported": "limited",
+      "description": "In Restricted Mode the chat ignores the project's KEDTEC.md / CLAUDE.md / AGENTS.md, .kedtec/settings.json and project memory."
     },
     "virtualWorkspaces": false
   },
   "scripts": {
-    "compile": "tsc -p .",
+    "compile": "node build.js",
+    "typecheck": "tsc -p .",
     "package": "node pack.js"
   },
   "devDependencies": {

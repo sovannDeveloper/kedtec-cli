@@ -775,3 +775,18 @@ test('session titles: the model names the conversation from its first exchange',
   assert.match(sent.messages[1].content, /the todo item widget overflows\[image\][\s\S]*First reply:\nFixed the overflow/);
   assert.strictEqual(sent.max_tokens, 200);
 });
+
+test('system prompt: the VS Code chat panel is named as the host, the terminal stays the default', () => {
+  const { buildSystemPrompt } = require('../dist/prompt');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kedtec-prompt-'));
+  const base = { root, mode: 'plan', model: 'm', nonInteractive: false, projectConfig: false };
+  const terminal = buildSystemPrompt(base);
+  assert.match(terminal, /working in the user's terminal/);
+  assert.match(terminal, /switch modes \(\/mode\)/);
+  const vscode = buildSystemPrompt({ ...base, host: 'vscode' });
+  assert.match(vscode, /chat panel of the user's VS Code/);
+  assert.match(vscode, /Running interactively in the VS Code chat panel/);
+  assert.match(vscode, /the mode menu under the chat input/);
+  assert.doesNotMatch(vscode, /in the user's terminal|\(\/mode\)/);
+  fs.rmSync(root, { recursive: true, force: true });
+});

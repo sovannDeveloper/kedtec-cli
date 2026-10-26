@@ -1,0 +1,19 @@
+{
+  // F5: build the extension (ide-bridge/) unminified with a source map, then
+  // open an Extension Development Host running it, on this repository. The
+  // KEDTec icon in its activity bar opens the chat. Media files (chat.js,
+  // chat.css) are read when the view opens: reopen the view, or run
+  // "Developer: Reload Webviews", to see a change; a .ts change needs a restart.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run KEDTec extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/ide-bridge", "${workspaceFolder}"],
+      "outFiles": ["${workspaceFolder}/ide-bridge/out/**/*.js"],
+      "sourceMaps": true,
+      "preLaunchTask": "kedtec: build extension (dev)"
+    }
+  ]
+}

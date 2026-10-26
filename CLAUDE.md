@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`kedtec` is a Claude Code–style terminal coding agent (TypeScript, Node ≥18.17). It talks OpenAI Chat Completions (the `openai` SDK is the only runtime dependency) to the KEDTec AI API or any OpenAI-compatible endpoint. `ide-bridge/` is a separate small VS Code extension that reports the open file and selection to the CLI. README.md is the user-facing spec for behavior (permission modes, slash commands, env vars, print mode). Read it before you change anything users can see.
+`kedtec` is a Claude Code–style terminal coding agent (TypeScript, Node ≥18.17). It talks OpenAI Chat Completions (the `openai` SDK is the only runtime dependency) to the KEDTec AI API or any OpenAI-compatible endpoint. `ide-bridge/` is the VS Code extension: it reports the open file and selection to the CLI, and its chat panel (`chat.ts` + `media/chat.js`) runs the same `Agent` from `src/` in the editor. README.md is the user-facing spec for behavior (permission modes, slash commands, env vars, print mode). Read it before you change anything users can see.
 
 ## Commands
 
@@ -16,6 +16,8 @@ npm test           # compile, then node --test test/*.test.js
 node dist/cli.js   # run the CLI without linking
 npm run bridge     # rebuild dist/kedtec-ide-bridge-<version>.vsix from ide-bridge/
 ```
+
+To run the extension, press F5 in VS Code ("Run KEDTec extension" in `.vscode/launch.json`). It runs `node ide-bridge/build.js --dev` (unminified, with a source map) and opens an Extension Development Host on this repo. Changes to `media/` show after "Developer: Reload Webviews". Changes to `.ts` files need the host restarted.
 
 Run a single test (after `npm run compile`, because the tests `require('../dist/...')`, not `src/`):
 
@@ -29,7 +31,8 @@ node --test --test-name-pattern="glob" test/core.test.js
 - **Never add a `build` npm script.** npm runs a full dependency install inside the git checkout of any package that has one, and on a global install this breaks the install folder. That is why the script is named `compile`.
 - Stack traces from `dist/` point into minified code with no source maps. Debug by reading the matching file in `src/`.
 - The version lives only in `package.json`, and `kedtec --version` reads it at run time. Release flow: `npm test` → commit → `npm version patch` → `git push --follow-tags`.
-- When `ide-bridge/` changes, bump `ide-bridge/package.json` version and run `npm run bridge`. The CLI auto-updates the extension where it is missing or older.
+- When `ide-bridge/` changes, bump `ide-bridge/package.json` version and run `npm run bridge`. The CLI auto-updates the extension where it is missing or older. The extension bundles `src/` (`ide-bridge/build.js`, esbuild, with `openai` inlined), so a change to the agent, tools, permissions or prompt needs a bridge rebuild too.
+- `npm test` checks that the bundled `.vsix` version matches `ide-bridge/package.json`. After a bridge version bump, run `npm run bridge` before `npm test`.
 - `src/shellSafety.ts`, `src/ignore.ts` and `src/diff.ts` are shared with the KEDTec VS Code extension. Keep them dependency-free and self-contained.
 - The codebase deliberately avoids dependencies: colors, the spinner, Markdown rendering, diffs and gitignore matching are all hand-written. Don't add libraries for these.
 
@@ -46,7 +49,10 @@ The core loop is `agent.ts` (`Agent`). It holds `messages`, calls `client.ts` (`
 - **`prompt.ts`**: builds the system prompt. It loads `KEDTEC.md` / `CLAUDE.md` / `AGENTS.md` from the git root down to cwd plus `~/.kedtec/KEDTEC.md` (40 KB per file, 80 KB total), and skips project files with `--no-project-config`.
 - **Interactive UI**: `repl.ts` holds the slash commands and the session loop. `screen.ts` is the full-screen transcript, input box and status line, and mouse/scroll handling. `input.ts` covers raw key input, history, `select` / `questionForm` / `tabbedPanel` prompts, and the `ask_user` forms. `ui.ts` holds the ANSI primitives, `Spinner` and `MarkdownStream`.
 - **Attachments**: `images.ts` (clipboard and file images, 5 MB limit, `sips` downscale on macOS) and `pastes.ts` (long pastes saved to temp files and shown as `[Pasted text #N]`).
+- **VS Code chat** (`ide-bridge/src/chat.ts`): a `WebviewViewProvider` that builds the same `Agent` / `Permissions` as `cli.ts` and implements `AgentEvents`, the permission `Asker` and `ask_user` by posting to the webview (`ide-bridge/media/chat.js`, plain JS with a hand-written Markdown renderer). The webview only draws. It passes `host: 'vscode'` to `buildSystemPrompt`, and VS Code's Restricted Mode plays the role of `--no-project-config`.
 - **IDE context**: `ide.ts` reads `~/.kedtec/ide/<pid>.json`, which the bridge extension writes, and picks the window whose workspace contains cwd. `ideBridge.ts` installs or updates the bundled `.vsix`.
 - **State on disk**: `config.ts` (`~/.kedtec` or `$KEDTEC_HOME`: `config.json` with mode 600, `sessions/`). Precedence is flag › env › config file › default. `session.ts` saves and resumes conversations per directory.
 
-Tests (`test/core.test.js`, `node:test`) cover the pure pieces: glob matching, command prefixes, permissions, shell classification, error rewriting and config normalization. Add new cases there against `dist/` exports.
+Tests (`node:test`):
+- `test/core.test.js` covers the pure pieces: glob matching, command prefixes, permissions, shell classification, error rewriting and config normalization. Add new cases there against `dist/` exports.
+- `test/chat.test.js` drives the VS Code chat panel without VS Code. It bundles `ide-bridge/src/chat.ts` with `vscode` aliased to `test/vscode-stub.js`, uses a recording webview and a local fake OpenAI streaming server, and sets `KEDTEC_HOME` to a temp dir. It awaits `panel.receive(msg)` (the webview message handler) so each turn completes. Add panel behavior tests there.

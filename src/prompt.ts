@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { HOME_DIR, PermissionMode } from './config';
-import { memoryPrompt } from './memory';
+import { STRUCTURE_MEMORY, memoryPrompt } from './memory';
 import { shellDescription } from './shell';
 
 // The instruction files a project may carry, in the order they are looked for
@@ -161,8 +161,25 @@ const MODE_TEXT: Record<PermissionMode, string> = {
   plan: 'Mode: PLAN (read-only). write_file and edit_file are blocked and run_command only runs commands that provably read inside the project. Investigate, then deliver a concrete plan: what you found (with file:line references) and each file you would create or change and how. Do not paste whole files. End by telling the user to switch modes (/mode) so you can apply it.',
 };
 
-export function buildSystemPrompt(opts: { root: string; mode: PermissionMode; model: string; nonInteractive: boolean; projectConfig: boolean; memoryDir?: string }): string {
-  const parts = [BASE_PROMPT];
+// What /init and /memory refresh send, in the CLI and in the VS Code chat panel.
+export const INIT_PROMPT = `Analyse this codebase and write a KEDTEC.md file at the project root for future agent sessions.
+Include: what the project is; the commands to install, build, run, lint and test (and how to run a single test); the high-level architecture and how the main pieces fit together, which needs several files read to understand; and the conventions and gotchas a newcomer would not guess.
+Do not list every file or repeat what is obvious from the tree, and do not invent anything you have not seen. If a KEDTEC.md, CLAUDE.md or AGENTS.md already exists, improve it instead of starting over. Read README files and manifests first.`;
+
+export const MEMORY_REFRESH_PROMPT = `Re-learn this project's structure and update the "${STRUCTURE_MEMORY}" memory with the memory tool.
+Read the README, the manifests and any instruction files, list the top level and the main source folders, and open the entry points. Then save "${STRUCTURE_MEMORY}" (type "project"): what the project is, the commands to install, build, run and test (one test too), the main folders and what each holds, how the main pieces fit together, and the gotchas a newcomer would trip on. At most about 60 lines, only what you saw, no file-by-file listing. Correct anything in the old version that is no longer true. Reply with a few lines on what changed.`;
+
+// `host` is where the conversation is shown: the terminal (the CLI), or the
+// chat panel of the VS Code extension (ide-bridge/), which renders Markdown
+// fully and has no slash commands for switching modes.
+export function buildSystemPrompt(opts: {
+  root: string; mode: PermissionMode; model: string; nonInteractive: boolean; projectConfig: boolean; memoryDir?: string; host?: 'terminal' | 'vscode';
+}): string {
+  const vscode = opts.host === 'vscode';
+  const parts = [vscode
+    ? BASE_PROMPT.replace("working in the user's terminal", 'working in the chat panel of the user\'s VS Code')
+      .replace('You are in a terminal: be concise.', 'You are in an editor chat panel: be concise.')
+    : BASE_PROMPT];
   const branch = gitBranch(opts.root);
   parts.push([
     '# Environment',
@@ -173,10 +190,12 @@ export function buildSystemPrompt(opts: { root: string; mode: PermissionMode; mo
     `- Model: ${opts.model}`,
     opts.nonInteractive
       ? '- Running non-interactively (CI / print mode): nobody can answer questions or approve prompts mid-run. Complete the task on your own judgment and finish with a clear summary.'
-      : '- Running interactively in a terminal: the user can answer questions (see "Asking the user").',
+      : vscode
+        ? '- Running interactively in the VS Code chat panel: the user can answer questions (see "Asking the user") and sees file paths you cite as links.'
+        : '- Running interactively in a terminal: the user can answer questions (see "Asking the user").',
   ].join('\n'));
   if (!opts.nonInteractive) parts.push(ASKING_PROMPT);
-  parts.push(`# ${MODE_TEXT[opts.mode]}`);
+  parts.push(`# ${vscode ? MODE_TEXT[opts.mode].replace('(/mode)', '(the mode menu under the chat input)') : MODE_TEXT[opts.mode]}`);
 
   const files = loadInstructions(opts.root, opts.projectConfig);
   if (files.length > 0) {

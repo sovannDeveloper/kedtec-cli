@@ -2,10 +2,13 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { ChatViewProvider } from './chat';
 
-// Tells the `kedtec` terminal CLI which file is open in this window and what is
-// selected in it, so the CLI can show "⧉ In ui.ts" / "⧉ 12 lines selected" under
-// its input box and hand the selection to the model with the next message.
+// Two things live here. The chat panel (chat.ts) runs the CLI's agent inside
+// the editor. And the bridge, below, tells the `kedtec` terminal CLI which file
+// is open in this window and what is selected in it, so the CLI can show
+// "⧉ In ui.ts" / "⧉ 12 lines selected" under its input box and hand the
+// selection to the model with the next message; the chat panel sends the same.
 // The CLI installs this extension itself (src/ideBridge.ts) when it runs in a
 // VS Code terminal and finds it missing.
 //
@@ -63,8 +66,9 @@ function snapshot(editor: vscode.TextEditor | undefined): void {
   lastSelection = editor.selection.isEmpty ? null : { ...toRange(editor.selection), text: doc.getText(editor.selection).slice(0, MAX_SELECTION_CHARS) };
 }
 
-function write(): void {
-  const state: BridgeState = {
+// What the CLI reads from the state file, and what the chat panel sends with a message.
+function state(): BridgeState {
+  return {
     pid: process.pid,
     workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath),
     file: lastFile,
@@ -72,7 +76,10 @@ function write(): void {
     selections: lastSelections,
     updated: Date.now(),
   };
-  const json = JSON.stringify(state);
+}
+
+function write(): void {
+  const json = JSON.stringify(state());
   const tmp = `${STATE_FILE}.tmp`;
   try {
     fs.mkdirSync(IDE_DIR, { recursive: true, mode: 0o700 });
@@ -92,14 +99,25 @@ function write(): void {
   }
 }
 
+let chat: ChatViewProvider | undefined;
+
 function schedule(): void {
   if (timer) clearTimeout(timer);
-  timer = setTimeout(write, DEBOUNCE_MS);
+  timer = setTimeout(() => { write(); chat?.editorChanged(); }, DEBOUNCE_MS);
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   snapshot(vscode.window.activeTextEditor);
   write();
+  chat = new ChatViewProvider(context, state);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId, chat, { webviewOptions: { retainContextWhenHidden: true } }),
+    vscode.commands.registerCommand('kedtec.newChat', () => chat?.newChat()),
+    vscode.commands.registerCommand('kedtec.history', () => chat?.showHistory()),
+    vscode.commands.registerCommand('kedtec.signIn', () => chat?.signIn()),
+    vscode.commands.registerCommand('kedtec.reload', () => chat?.reload()),
+    vscode.workspace.onDidGrantWorkspaceTrust(() => chat?.reload()),
+  );
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor(editor => { snapshot(editor); schedule(); }),
     vscode.window.onDidChangeTextEditorSelection(e => { snapshot(e.textEditor); schedule(); }),

@@ -134,6 +134,33 @@ extension is installed and VS Code has the project open. Other editors
 (Android Studio, Xcode) have no bridge: name the lines yourself with
 `@path/to/file#L10-20`.
 
+### Chat panel
+
+The same extension adds a **KEDTec** chat to VS Code's activity bar. It runs
+the CLI's own agent (the same tools, permission modes, project instructions,
+memory and auto-compaction) inside the editor, so nothing else has to be
+installed or running:
+
+- It uses `~/.kedtec/config.json`, like the CLI. **KEDTec: Sign In** (in the
+  view's `…` menu) asks for the endpoint, key and default model, as `kedtec
+  login` does.
+- Approvals appear in the chat as cards (edits show their diff), and so do
+  `ask_user` questions. The mode and model menus are under the input. Bypass is
+  offered only when the configured mode is already bypass.
+- The open file, or the lines selected in it, go with your message once per
+  change, as from the terminal. Click the `⧉` chip to leave them out. Paste an
+  image to attach it.
+- Conversations are saved with the CLI's, per folder: the history button lists
+  them, and `kedtec -c` in a terminal continues one started in the panel.
+- Type `/` for the slash commands, filtered as you type (↑/↓, Tab or Enter
+  picks one): `/help`, `/clear`, `/compact [focus]`, `/model [id]`, `/mode
+  [name]`, `/plan`, `/init`, `/memory [refresh|forget name]`, `/resume`,
+  `/todos`, `/cost`, `/status`, `/login`. Esc or **Stop** ends a turn and
+  declines any approval left open.
+- In a Restricted Mode window the panel works like `--no-project-config`: the
+  project's instruction files, `.kedtec/settings.json` and memory are ignored
+  until you trust the folder.
+
 ## Permission modes
 
 | Mode | File edits | Shell commands |
@@ -300,9 +327,15 @@ git push --follow-tags
 
 Users then update with `npm i -g github:sovannDeveloper/kedtec-cli` (see Install).
 
-After changing `ide-bridge/`, bump its version in `ide-bridge/package.json` and
-run `npm run bridge`: it rebuilds `dist/kedtec-ide-bridge-<version>.vsix`, and
-the CLI updates the extension in any window where it is missing or older.
+To try the extension, open this repository in VS Code and press F5 ("Run KEDTec
+extension"). An Extension Development Host opens with the KEDTec chat in its
+activity bar, running your working copy. `npm test` also tests the chat panel
+(`test/chat.test.js`) against a fake model server, so it needs no endpoint.
+
+After changing `ide-bridge/`, or any `src/` file the chat panel uses (it bundles
+the agent from `src/`), bump its version in `ide-bridge/package.json` and run
+`npm run bridge`. It rebuilds `dist/kedtec-ide-bridge-<version>.vsix`, and the
+CLI updates the extension in any window where it is missing or older.
 
 `src/shellSafety.ts`, `src/ignore.ts` and `src/diff.ts` are shared with the
 KEDTec VS Code extension: the read-only command classifier, the `.gitignore`
